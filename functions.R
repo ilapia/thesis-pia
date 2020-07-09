@@ -1,11 +1,7 @@
----
-title: "functions"
-author: "Ilaria Pia"
-date: "09/07/2020"
-output: pdf_document
----
 
-```{r setup, include=FALSE}
+
+
+###{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library("rstan")
 library(matrixStats)
@@ -13,11 +9,10 @@ options(mc.cores = parallel::detectCores())
 
 library("raster")
 library(Rcpp)
-```
+###
 
-## R Markdown
-Load files
-```{r}
+
+### load files
 
 library("rstan")
 library(matrixStats)
@@ -30,10 +25,10 @@ library(readxl)
 sourceCpp("Matern32Covariance.cpp")
 sourceCpp("expCovariance.cpp")
   
-```
+###
 
 ### functions
-```{r raster plot}
+###{r raster plot}
 load("rastergrids")
 
 # Visualize the study area
@@ -46,9 +41,9 @@ raster.plot = function(var, title, points=F, e=ee, r = rr, boxplot=F, m=1,n=1, s
   if(points) points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
   if(boxplot) boxplot(var, main=titles[[i]])
 }
-```
+###
 
-```{r model fit}
+###{r model fit}
 model=function(x,s,y,V, xpr=xpred,
                model.file, dat = whitefish_dat,
                wp=400, it=1000, ch=3, param=c("f", "s2_matern", "l","r") , 
@@ -72,9 +67,9 @@ model=function(x,s,y,V, xpr=xpred,
   
   return(list(fit=fit, pr=p))
 }
-```
+###
 
-```{r linear cov}
+###{r linear cov}
 linearCovariance <- function(x1,x2,sigma2) {
   # K = exponentialCovariance(x1,x2,l,sigma2)
   # 
@@ -87,9 +82,9 @@ linearCovariance <- function(x1,x2,sigma2) {
   return(K)
 }
 
-```
+###
 
-```{r prediction}
+###{r prediction}
 prediction= function(m, Covariance, x, xpred , s, spred, thin=8) {
   m_thinned = as.matrix(m[seq(1,nrow(m),thin),])
 
@@ -149,9 +144,9 @@ prediction= function(m, Covariance, x, xpred , s, spred, thin=8) {
   Varf = rowMeans(VarfMCMC) + rowSds(EfMCMC)^2
 return( list("summary_beta"=round(summary_beta,3), "Ef"=Ef, "Varf"=Varf, "betas"=sampf_linMCMC, "EfMC"=EfMCMC, "Kpt"=Kpt, "Kpt_lin"=Kpt_lin))
 }
-```
+###
 
-```{r posterior.check}
+###{r posterior.check}
 posterior.check=function(fit) {
   m = as.matrix(fit)
   #print(fit.w.q)              # Rhat
@@ -164,9 +159,9 @@ posterior.check=function(fit) {
   
   return(m)
 }
-```
+###
 
-```{r residual}
+###{r residual}
 ee1 <- extent(s2)
 rr1 <- raster(ee1, ncol=length(y2), nrow=length(y2))
 residual=function(ptest, xpr, ypr, Vpr ){
@@ -197,10 +192,10 @@ residual=function(ptest, xpr, ypr, Vpr ){
   boxplot(resid)
   return(resid)
 }
-```
+###
 
 
-```{r validate}
+###{r validate}
 validate=function(post,yp,Vp,xp,sp,x,s){
     r = as.matrix(post, pars="r")
   	m = as.matrix(post)
@@ -215,9 +210,9 @@ validate=function(post,yp,Vp,xp,sp,x,s){
   KfoldCV = mean(logLikest, na.rm =T)
   return(KfoldCV)
 }
-```
+###
 
-```{r kfoldcv}
+###{r kfoldcv}
 cv1 = function(data, stanmodel, K=5) {
  rows = sample(nrow(data))
   df = data[rows,]
@@ -267,4 +262,4 @@ cv1 = function(data, stanmodel, K=5) {
   KfoldCV = mean(logLikest, na.rm =T)
   return(KfoldCV)
 }
-```
+###

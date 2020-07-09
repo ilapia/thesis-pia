@@ -1,5 +1,5 @@
 ---
-title: "Models"
+title: "Data preparation"
 author: "Ilaria Pia"
 date: "29/06/2020"
 output:
@@ -17,7 +17,7 @@ Load files
 
 ```{r}
 library(readxl)
-setwd("/home/piailari/Desktop/whitefishes/datafiles")
+setwd("/home/piailari/Documents/thesis-pia/datafiles")
 
 # Load the data
 whitefish.dat.cov = read.table("white_fishes_final.txt", header=TRUE)
@@ -127,6 +127,8 @@ xpred.q=cbind(xpred,xpred2 )
 Future
 
 ```{r}
+setwd("/home/piailari/Documents/thesis-pia/datafiles")
+  
 whitefish.raster.fut = read.table("white_fishes_final_raster_fut.txt", header=TRUE) 
 whitefish.raster.past = read.table("white_fishes_final_raster.txt", header=TRUE) 
 
@@ -161,7 +163,7 @@ xpred.fut[,8:15] = t( apply( t(apply(xpredcont.fut,1,'-',mxcont)),1,'/',stdxcont
 ```
 
 ```{r}
- save(x,x.q,V,y,y.v,s, file="finalData")
+ #save(x,x.q,V,y,y.v,s, file="finalData")
  save(xpred, xpred.q, xpred.fut, spred, spred.fut, file="finalDataPred")
 
 ```

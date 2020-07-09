@@ -58,6 +58,8 @@ ve2.t=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmod
 
 ### Study results
 ```{r}
+setwd("/home/piailari/Documents/thesis-pia/fits")
+
 wf1.g=readRDS("fit_wf1_gamma.rds")
 #p.wf1.g=readRDS( "pred_wf1_gamma.RData")
 wf2.g=readRDS("fit_wf2_gamma.rds")

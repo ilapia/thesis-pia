@@ -1,0 +1,1252 @@
+---
+title: "SampleSmartSea dataset"
+author: "Ilaria Pia"
+date: "16/03/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE)
+```
+
+## SampleSmartSea dataset
+The data are stored in two folders. The first one contains data collected in years 1975-2005, the second one contains prediction data for years 2006-2059. In each of the two folders, we have NETcdf files containing data collected at a specific survey site in a specific year. The survey sites consists of 18 different intensive stations. In addiction we have 5 NETcdf files containing Gulf of Bothnia (GoB) layers that accounts values (measurements or predictions) of variables such as: 'Effective.ocean.transport.along.i.axis', 'Effective.ocean.transport.along.j.axis', 'Ice.concentration.for.categories', 'Length.of.events.of..oxyc' , 'potential_temperature'. These variables are stored using different grid-types. According to the file denomination: grid_T files have scalar values, representative of the center of each cell. Here, such grid is used for temperature an hypoxia. U, V and W grids store vector components, they represent movement from one grid-cell to another, by storing the speed of the point between the two cells: U showing the east-west velocities, V the north-south and W the up-down ones. Such grids are used to store 'Effective.ocean.transport' variables. 
+For the ice concentration we have daily average (1d) values, while for all the other variables we have monthly average (1m) values. Data are taken in year 2000 in the first folder and are predicted for year 2058 in the second folder. In the latter, we have a sixth raster-layer  variable
+
+First we create our function to open and store `.nc` data as a list of dataframes.
+```{r}
+library(ncdf4)
+
+open_nc = function(file, verbose = F) {
+  data = nc_open(file)
+  variables = names(data$var)
+  if(verbose) print(data)
+
+  l = NULL
+  l[variables] = list(NULL)
+  for (i in 1:data$nvars) {
+    l[[i]] = ncvar_get(data,variables[i])
+    nna=sum(is.na(l[[i]]))
+    if(nna>0) cat(paste("Warning: variable", variables[i], "contains", nna, "NA values", "\n"))
+  }
+  nc_close(data)
+  return(l)
+}
+
+summary_nc = function(nc, varlist = F) {
+  if(varlist)  print(summary(nc))
+  par(mfrow = c(2,2))
+  for (i in 3:length(nc)) {
+    cat(paste( "\n", names(nc)[i], "\n", sep = ""))
+    print( summary(as.vector(nc[[i]])) )
+    hist(nc[[i]], main = names(nc)[i], xlab ="" )
+  }
+}
+```
+
+Now we can have a look at the files, we consider the file '2055_sharkUS5B', that contains predictions for year 2055, at the station sharkUSB. 
+```{r}
+nc = open_nc("/home/piailari/Documents/thesis/SampleSmartSea/A005/2055_sharkUS5B.nc")
+str(nc)
+summary_nc(nc)
+```
+
+The file is a list of 17 variables. The variables 'nav_lat' and 'nav_lon' gives latitude and longitude of the station. There are three variables concerning the time. The remaining variables consist of environmental quantities, measured or predicted according to the year (smaller or greater than 2005). From the dimension of such variables we can observe that we have 36 measurements each day, taken at different depths. The variable 'depth_bounds' gives the depth boundaries at which each measurement was taken, in increasing order, that is from the most superficial, to the deepest values. The only variable with just one measurement per day is 'sossh'.
+
+
+Now we consider one of the files containing Gob raster layers: 'GOB_1m_20580101_20581231_grid_T.nc'. We can observe that it contains layers for 4 different environmental variables: temperature, salinity, River runoffs, total precipitation. For each variable we have 12 different bands, each of them contains the monthly mean measurements in the Gulf of Bothnia area for the year 2058. The variables of interest are salinity and temperature, for them we also have 36 different levels, that correspond to 36 different depth bounds of the measurement. In addiction we have latitude, longitude and three time variables.  
+
+The file 'NORDIC-GOB_1d_20580101_20581231_grid_T.nc' has 365 different bands, containing the daily ice concentration and the daily ice thickness for the year 2058. Both variables are measured at 5 different levels. We are plotting the data for the first of April.
+
+```{r}
+library("raster")
+setwd("/home/piailari/Documents/thesis/SampleSmartSea/A005/")
+
+#G = open_nc("NORDIC-GOB_1m_20580101_20581231_grid_T.nc")
+#str(G)
+
+Gob = raster("NORDIC-GOB_1m_20580101_20581231_grid_T.nc", varname="votemper", band =1, level=12, xmx=max("nav_lon"), ymn=min("nav_lat"), ymx=max("nav_lat"), xname="nav_lon",yname="nav_lat") 
+Gob
+plot(Gob, main = c("Mean month temperature, Jan2058", "at 35-39 meters depth"))
+
+Gob_d = raster("NORDIC-GOB_1d_20580101_20581231_grid_T.nc", band =91, varname = "iceconccat" , level =2) 
+Gob_d
+plot(Gob_d, main = "Mean day ice concentration, 1Apr2058")
+```
+
+Note the warning message: 'I was asked to get a varid for dimension named x BUT this dimension HAS NO DIMVAR!' and 'I was asked to get a varid for dimension named y BUT this dimension HAS NO DIMVAR! '. The plot is made using different coordinates, than latitude and longitude. 
+
+We now plot the raster layer containing temperature measurements, made for the most superficial waters (0-3 meters depth) in January and June for year 2058 and 2000. We add the stations point locations.
+
+```{r }
+### Future 
+# set path and filename
+ncpath <- "/home/piailari/Documents/thesis/SampleSmartSea/A005/"
+
+ncname = c()
+year = sort(rep(2006:2059,18))
+type = rep(c("B7","BO3","BO5","C3","F3","F9","F16","F64","Forsmark", "Furuogrund", "Kalix","MS4", "NB1", "Ratan", "Skagsudde","Spikarna","SR5", "US5B") , 54)
+for (i in 1:length(year)) {
+  ncname[i] = paste(year[i], "_shark", type[i],  sep="")
+}
+ncfname.fut <- paste(ncpath, ncname, ".nc", sep="")
+  
+```
+
+
+
+```{r}
+setwd("/home/piailari/Documents/thesis/SampleSmartSea/A005/")
+
+## January 2058
+r = raster("NORDIC-GOB_1m_20580101_20581231_grid_T.nc") 
+r
+
+summary(r$potential_temperature)
+plot(r, ylim = c(-50,400), main = "GoB average potential temperature January 2058", col = rev(heat.colors(10)), alpha = 0.8 )
+
+# we add the 18 stations location on GoB   
+for (i in 1:18) {   
+  nc = open_nc(ncfname.fut[i])
+  points(nc$nav_lat,nc$nav_lon, col =4, pch =20)
+
+}
+
+## June 2058
+r = raster("NORDIC-GOB_1m_20580101_20581231_grid_T.nc", band =6) 
+r
+#print(r)
+summary(r$potential_temperature)
+plot(r, ylim = c(-50,400), main = "GoB average potential temperature June 2058", col = rev(heat.colors(10)), alpha = 0.8 )
+
+# we add the 18 stations location on GoB   
+for (i in 1:18) {   
+  nc = open_nc(ncfname.fut[i])
+  points(nc$nav_lat,nc$nav_lon, col =4, pch =20)
+
+}  
+```
+
+```{r, warning=F}
+### Past
+# set path and filename
+ncpath <- "/home/piailari/Documents/thesis/SampleSmartSea/A001/"
+
+ncname = c()
+year = sort(rep(1975:2005,18))
+type = rep(c("B7","BO3","BO5","C3","F3","F9","F16","F64","Forsmark", "Furuogrund", "Kalix","MS4", "NB1", "Ratan", "Skagsudde","Spikarna","SR5", "US5B") , 54)
+for (i in 1:length(year)) {
+  ncname[i] = paste(year[i], "_shark", type[i],  sep="")
+}
+ncfname <- paste(ncpath, ncname, ".nc", sep="")
+
+```
+
+
+```{r}
+setwd("/home/piailari/Documents/thesis/SampleSmartSea/A001")
+
+## January 2000
+r = raster("NORDIC-GOB_1m_20000101_20001231_grid_T.nc") 
+r
+
+summary(r$potential_temperature)
+plot(r, ylim = c(-50,400),  main = "GoB average temperature January 2000", col = rev(heat.colors(15)), alpha = 0.8 )
+
+for (i in 1:18) {
+  nc = open_nc(ncfname[i])
+  points(nc$nav_lat,nc$nav_lon, col =4, pch =20)
+}
+
+## June 2000
+r = raster("NORDIC-GOB_1m_20000101_20001231_grid_T.nc", band=6) #other files has less interesting variable layer
+r
+#print(r)
+summary(r$potential_temperature)
+plot(r, ylim = c(-50,400),  main = "GoB average temperature June 2000", col = rev(heat.colors(15)), alpha = 0.8 )
+
+for (i in 1:18) {
+  nc = open_nc(ncfname[i])
+  points(nc$nav_lat,nc$nav_lon, col =4, pch =20)
+}
+
+```
+
+We plotted the Gob average temperatures in January and June of years 2000 and 2058. We added (blue spots) the survey sites. We can observe that they are all in the same area, and out of the sea boundary, hence there is something wrong with the coordinates obtained either from the stations or from the raster layers. 
+If we extract longitude and latitude from the GoB files, we can observe they are different from the one reported on the map: the raster function used the data-point indexes instead of lat and lon variables from the netCDF file. We need to fix this:
+
+```{r}
+
+library(raster)
+setwd("/home/piailari/Documents/thesis/SampleSmartSea/A005/")
+inputfile <- "NORDIC-GOB_1m_20580101_20581231_grid_T.nc"
+
+
+lat <- raster(inputfile, varname="nav_lat")
+lon <- raster(inputfile, varname="nav_lon")
+temp <- raster(inputfile, varname="votemper",  band =6)
+
+## values drops the "raster" wrapper, just returns values in order as a vector
+d <- cbind(values(lon), values(lat), values(temp))
+dd =na.exclude(d)
+## remap arbitrary values to [0,1] for a colour table
+scl <- function(x) 1-(x - min(x, na.rm = TRUE))/diff(range(x, na.rm = TRUE))
+n <- 56
+plot(d[,1:2], ylim=c(60,66), xlim=c(10,32), pch = 16, col = (heat.colors(n)[scl(d[,3]) * (n-1) + 1]), xlab= "lon", ylab="lat",  main = "GoB average potential temperature June 2058")
+
+# colorbar
+library(fields)
+my.colors = rev(heat.colors(56))
+z=matrix(dd[,3],nrow=1)
+x=0.1
+y=seq(min(dd[,3]), max(dd[,3]),len=nrow(dd))
+image.plot(x,y,z, legend.only=TRUE, col=my.colors,axes=FALSE,xlab="",ylab="",   smallplot= c(.80,.82,0.45,0.7) ) 
+#colorbar.plot(28,65, horizontal = F, strip.width = 0.02, strip.length = 0.1, col=rev(heat.colors(64)), strip = seq(min(dd),max(dd),0.5)) #lables ..zrange..?
+    
+#North arrow 
+library(GISTools)
+compassRose(12,65, cex = 0.7)
+#north.arrow(28,60,len=0.2,lab='NORTH',cex.lab=0.7,tcol='black')
+
+#Stations locations
+for (i in 1:18) {   
+  nc = open_nc(ncfname.fut[i])
+  points(nc$nav_lon,nc$nav_lat, col =1, pch =20)
+  text(nc$nav_lon,nc$nav_lat, labels=type[i], col =1, pos=1, cex=0.7)
+
+}
+```
+\newpage 
+
+## Temperature and salinity
+We are interested in studying how temperature and salinity impact on white fishes reproduction and on larvae number. We calculate and visualize the following:  
+
+- the average sea surface (0-10m depths) temperature of April-June for
+years 1995-2005 and 2030-2059
+- the average sea surface (0-10m depths) salinity of April-June for
+years 1995-2005 and 2030-2059
+
+We are interested in values from April to June, from day 91 to day 181 (for leap years we will consider days 92-182), concerning the most superficial measurements, up to 9 meters depth: we consider the mean value of the first three daily measurements, made at a depth range of 0-3, 3-6 and 6-9 meters respectively. Indeed white fishes spawns hatch in spring, in superficial waters.  
+
+
+We consider the data files corresponding to the station 'sharkB7'. We start with data collected in years 1995 - 2005.
+```{r}
+### Past - temperature
+
+ncfnameB7 = ncfname[seq(1, length(ncfname), by = 18)]
+
+temp = matrix(,nrow = length(ncfnameB7), ncol = 91*36)  #April - June
+## mean.temp
+# 31 rows : years 1995-2005
+# 91 columns : days April-June
+mean.temp = matrix(,nrow = length(ncfnameB7), ncol = length(91:181)) 
+for(i in 1:length(ncfnameB7)) {
+  nc = open_nc(ncfnameB7[i])
+  if(length(nc$time_centered)==366) nc$votemper = nc$votemper[,-60] # we exclude the 29th of february for leap years
+  
+  temp[i,] = as.vector(nc$votemper[,91:181])
+  mean.temp[i,] = apply(nc$votemper[1:3,91:181], 2, mean) # mean daily temperature, for 3 different depth measuerements
+}
+
+# mean temperature in each day
+par(mfrow= c(1,1))
+# per day
+#boxplot(mean.temp[21:31,],  main = c("Mean day temperature in April-June 1995-2005", "Distributions per day"), xlab= "days", xaxt="n")
+day.mean.temp = apply(mean.temp[21:31,], 2, mean)
+plot(day.mean.temp, main = c("Mean day temperature in April-June 1995-2005","Mean value and 95% CI per day"), xlab = "days", ylab ="mean temp",type = "l")
+day.q = apply(mean.temp[21:31,], 2, quantile)
+lines(1:91, day.q[2,], col=2, lty=2)
+lines(1:91, day.q[4,], col=2, lty=2)
+
+#per year
+#boxplot(t(mean.temp[21:31,]),  main = c( "Mean day temperature in April-June 1995-2005", "Distributions per year"), xlab= "years", xaxt="n")
+#axis(1, at = 1995:2005,  las=2,tick = T, labels = 1995:2005)
+year.mean.temp = apply(mean.temp, 1, mean)
+plot(1995:2005, year.mean.temp[21:31], main = c( "Mean day temperature in April-June 1995-2005", "Mean value and 95% CI per year"), xlab = "years", ylab ="mean temp",type = "b", ylim =c(2,9))
+year.q = apply(mean.temp, 1, quantile)
+lines(1995:2005, year.q[2,21:31], col=2, lty=2)
+lines(1995:2005, year.q[4,21:31], col=2, lty=2)
+
+```
+
+From the above plots we can observe how temperature generally increases from April to June, from 0 to 12 degrees. The increasing rate is low in the first month, it then grows in May. In the considered years (1995-2005) we can't observe a clear trend of the daily temperature: years 1999 and 2002 were the warmest ones, with a mean temperature around 7, year 1998 was the coldest, with a mean temperature around 3 degrees.
+
+```{r}
+### Past - salinity 
+
+ncfnameB7 = ncfname[seq(1, length(ncfname), by = 18)]
+
+salt = matrix(,nrow = length(ncfnameB7), ncol = 91*36)  #April - June
+## mean.salt
+# 31 rows : years 1995-2005
+# 91 columns : days April-June
+mean.salt = matrix(,nrow = length(ncfnameB7), ncol = length(91:181)) 
+for(i in 1:length(ncfnameB7)) {
+  nc = open_nc(ncfnameB7[i])
+  if(length(nc$time_centered)==366) nc$vosaline = nc$vosaline[,-60] # we exclude the 29th of february for leap years
+  
+  salt[i,] = as.vector(nc$vosaline[,91:181])
+  mean.salt[i,] = apply(nc$vosaline[1:3,91:181], 2, mean) 
+}
+
+# mean salinity in each day
+par(mfrow= c(1,1))
+# per day
+#boxplot(mean.salt[21:31,],  main = c("Mean day salinity in April-June 1995-2005", "Distributions per day"), xlab= "days", xaxt="n")
+day.mean.salt = apply(mean.salt[21:31,], 2, mean)
+plot(day.mean.salt, main = c("Mean day salinity in April-June 1995-2005","Mean value and 95% CI per day"), xlab = "days", ylab ="mean salt",type = "l")
+day.q = apply(mean.salt[21:31,], 2, quantile)
+lines(1:91, day.q[2,], col=2, lty=2)
+lines(1:91, day.q[4,], col=2, lty=2)
+
+#per year
+#boxplot(t(mean.salt[21:31,]),  main = c( "Mean day salinity in April-June 1995-2005", "Distributions per year"), xlab= "years", xaxt="n")
+#axis(1, at = 1995:2005,  las=2,tick = T, labels = 1995:2005)
+year.mean.salt = apply(mean.salt, 1, mean)
+plot(1995:2005, year.mean.salt[21:31], main = c( "Mean day salinity in April-June 1995-2005", "Mean value and 95% CI per year"), xlab = "years", ylab ="mean salt",type = "b")
+year.q = apply(mean.salt, 1, quantile)
+lines(1995:2005, year.q[2,21:31], col=2, lty=2)
+lines(1995:2005, year.q[4,21:31], col=2, lty=2)
+
+```
+
+
+
+
+From the above plots we can observe how salinity varies very little in the years 1995-2005, from a minimum around 3.10 to a maximum around 3.4, there is no evident trend. If we consider the the daily salinity , averaged in the 31 years, we can observe how salinity is constantly decreases from 3.5 to a minimum around 3 reached around mid of May, to increase again up to 3.3 in the end of June. 
+
+
+We consider now the data predicted for years 2030 - 2059.
+```{r}
+### Future - temperature
+
+ncfname.futB7 = ncfname.fut[seq(1, length(ncfname.fut), by = 18)]
+
+temp = matrix(,nrow = length(ncfname.futB7), ncol = 91*36)  #April - June
+## mean.temp
+# 54 rows : years 2006-2059
+# 91 columns : days April-June
+mean.temp = matrix(,nrow = length(ncfname.futB7), ncol = length(91:181)) 
+for(i in 1:length(ncfname.futB7)) {
+  nc = open_nc(ncfname.futB7[i])
+  if(length(nc$time_centered)==366) nc$votemper = nc$votemper[,-60] # we exclude the 29th of february for leap years
+  
+  temp[i,] = as.vector(nc$votemper[,91:181])
+  mean.temp[i,] = apply(nc$votemper[1:3,91:181], 2, mean)
+}
+
+# mean temperature in each day
+par(mfrow= c(1,1))
+# per day
+#boxplot(mean.temp[25:54,],  main = c("Mean day temperature in April-June 2030-2059", "Distributions per day"), xlab= "days", xaxt="n")
+day.mean.temp.fut = apply(mean.temp[25:54,], 2, mean)
+plot(day.mean.temp.fut, main = c("Mean day temperature in April-June 2030-2059", "Mean value and 95% CI per day"), xlab = "days", ylab ="mean temp",type = "l")
+day.q = apply(mean.temp[25:54,], 2, quantile)
+lines(1:91, day.q[2,], col=2, lty=2)
+lines(1:91, day.q[4,], col=2, lty=2)
+
+#per year
+#boxplot(t(mean.temp[25:54,]),  main = c( "Mean day temperature in April-June 2030-2059", "Distributions per year"), xlab= "years", xaxt="n")
+#axis(1, at = 2030:2059,  las=2,tick = T, labels = 2030:2059)
+year.mean.temp.fut = apply(mean.temp, 1, mean)
+plot(2030:2059, year.mean.temp.fut[25:54], main = c("Mean day temperature in April-June 2030-2059","Mean value and 95% CI per year"), xlab = "years", ylab ="mean temp",type = "b", ylim = c(5,10))
+year.q = apply(mean.temp, 1, quantile)
+lines(2030:2059, year.q[2,25:54], col=2, lty=2)
+lines(2030:2059, year.q[4,25:54], col=2, lty=2)
+
+```
+
+From the above plots we can observe how temperature increases with a linear trend from April to June, from 1 to 14 degrees. We can notice how the maximum temperature increased of 2 degrees with respect to years 1995-2005, while the minimum has increased of about 1 degree. The increasing rate is just a bit lower rate in the first month. We can't observe a clear trend of the daily temperature predictions through the years: the warmest value is around 9 degrees for 2035, while the maximum registered in the past was around 7 degrees. The coldest prediction is around 6 degrees for years 2046 and 2050.
+
+```{r}
+### Future - salinity
+
+ncfname.futB7 = ncfname.fut[seq(1, length(ncfname.fut), by = 18)]
+
+salt = matrix(,nrow = length(ncfname.futB7), ncol = 91*36)  #April - June
+## mean.salt
+# 54 rows : years 2006-2059
+# 91 columns : days April-June
+mean.salt = matrix(,nrow = length(ncfname.futB7), ncol = length(91:181)) 
+for(i in 1:length(ncfname.futB7)) {
+  nc = open_nc(ncfname.futB7[i])
+  if(length(nc$time_centered)==366) nc$vosaline = nc$vosaline[,-60] # we exclude the 29th of february for leap years
+  
+  salt[i,] = as.vector(nc$vosaline[,91:181])
+  mean.salt[i,] = apply(nc$vosaline[1:3,91:181], 2, mean)
+}
+
+# mean salinity in each day
+par(mfrow= c(1,1))
+# per day
+#boxplot(mean.salt[25:54,],  main = c("Mean day salinity in April-June 2030-2059", "Distributions per day"), xlab= "days", xaxt="n")
+day.mean.salt.fut = apply(mean.salt[25:54,], 2, mean)
+plot(day.mean.salt.fut, main = c("Mean day salinity in April-June 2030-2059", "Mean value and 95% CI per day"), xlab = "days", ylab ="mean salt",type = "l")
+day.q = apply(mean.salt[25:54,], 2, quantile)
+lines(1:91, day.q[2,], col=2, lty=2)
+lines(1:91, day.q[4,], col=2, lty=2)
+
+#per year
+#boxplot(t(mean.salt[25:54,]),  main = c( "Mean day salinity in April-June 2030-2059", "Distributions per year"), xlab= "years", xaxt="n")
+#axis(1, at = 2030:2059,  las=2,tick = T, labels = 2030:2059)
+year.mean.salt.fut = apply(mean.salt, 1, mean)
+plot(2030:2059, year.mean.salt.fut[25:54], main = c("Mean day salinity in April-June 2030-2059","Mean value and 95% CI per year"), xlab = "years", ylab ="mean salt",type = "b")
+year.q = apply(mean.salt, 1, quantile)
+lines(2030:2059, year.q[2,25:54], col=2, lty=2)
+lines(2030:2059, year.q[4,25:54], col=2, lty=2)
+
+```
+
+
+Again, if we consider daily salinity it remains constantly around 3, decreasing for the first months from 3.4 to a minimum of 3 in mid May, and then increases up to 3.2 in June. Year mean salinity instead varies between 2.8 in 2056 and 3.5 in 2030, a decreasing trend is visible from the plot.  
+
+Let's compare the predicted values with the measured ones for the mean daily temperature and salinity in April-June: we can observe how in the future, daily temperature increases of about 2 degrees on average, while daily salinity generally decreases of about 0.1.
+```{r}
+plot(day.mean.temp, col="blue", main = "Mean day temperature", type="l", ylim=c(min(day.mean.temp), max(day.mean.temp.fut)), xlab="days")
+lines(1:91, day.mean.temp.fut, col= "orange")
+legend("topleft", legend=c("years 1995-2005", "years 2030-2059"), col=c("blue", "orange"), lty=1, bty="n")
+
+plot(day.mean.salt, col="blue", main = "Mean day salinity", type="l",xlab="days")
+lines(1:91, day.mean.salt.fut, col= "orange")
+legend("top", legend=c("years 1995-2005", "years 2030-2059"), col=c("blue", "orange"), lty=1, bty="n" )
+
+```
+
+\newpage
+
+### Temperature as a covariate
+We now focus on the temperature values (measured  in year 2000 and predicted temperature in year 2058), retrieved from the GoB files. We want to extract this quantity in order to use it as a covariate in the hierarchical species distribution model we developed for white fishes.  
+To do so, we need to conform the latter variable to the one  in 'whitefish.raster' data. Such variables cover raster cells of $300\times 300 m^2$, while the temperature extracted from the NETcdf files have a wider scale, they cover a $1\times 1M^2$ nautical miles , that is equivalent to $1852\times 1852 m^2$. 
+Hence we need to upscale our raster data related to the temperature. We will consider the mean temperature evaluated in the 3 most superficial layers, saved in different levels of the raster file.
+
+```{r}
+library(raster)
+setwd("/home/piailari/Documents/thesis/SampleSmartSea/A005/")
+gob <- "NORDIC-GOB_1m_20580101_20581231_grid_T.nc"
+
+#extract April, May and June temperature
+temp.apr1 = raster(gob, varname="votemper",  band =4, level =1) #0-3m depth
+temp.may1 = raster(gob, varname="votemper",  band =5, level =1)
+temp.jun1 = raster(gob, varname="votemper",  band =6, level =1)
+temp.apr2 = raster(gob, varname="votemper",  band =4, level =2) #3-6m depth
+temp.may2 = raster(gob, varname="votemper",  band =5, level =2)
+temp.jun2 = raster(gob, varname="votemper",  band =6, level =2)
+temp.apr3 = raster(gob, varname="votemper",  band =4, level =3) #6-9m depth
+temp.may3 = raster(gob, varname="votemper",  band =5, level =3)
+temp.jun3 = raster(gob, varname="votemper",  band =6, level =3)
+
+# layer with everage temperature in Apr-Jun at depth 0-9m
+mean.temp.layer = overlay(temp.apr1, temp.may1, temp.jun1, temp.apr2, temp.may2, temp.jun2, temp.apr3, temp.may3, temp.jun3, fun =mean)
+plot(mean.temp.layer, main="Average shallow water temperature April-June2058", col = rev(heat.colors(n)))
+```
+
+
+Again the coordinate system of our mean temperature layer are reduced to its indexes, we change them to latitude and longitude:
+```{r}
+d =  cbind(values(lon), values(lat), values(mean.temp.layer))
+d = na.exclude(d)
+plot(d[,1:2], ylim=c(60,66), xlim=c(10,32),pch = 16, col = (heat.colors(n)[scl(d[,3]) * (n-1) + 1]), main="Average shallow water temperature April-June2058")
+# from df to raster
+e.temp = extent(cbind(d[,1],d[,2]))
+r.temp = raster(e.temp, ncol=length(unique(d[,1])), nrow=length(unique(d[,2])))
+mean.temp.r = rasterize(d[,1:2],r.temp, d[,3], fun=mean)
+
+plot(mean.temp.r, main="Average shallow water temperature April-June2058",  col=rev(heat.colors(n)) )
+
+
+```
+
+If we plot one of the whitefish raster variables, we can observe that the coordinate reference system (CRS) for the two files is different, let's display the ice coverage:
+```{r}
+### whitefish raster data
+setwd("/home/piailari/Documents/thesis")
+whitefish.raster = read.table("predraster_whitefish.txt", header=TRUE, sep="\t")
+
+e = extent(cbind(whitefish.raster$X,whitefish.raster$Y))
+r = raster(e, ncol=length(unique(whitefish.raster$X)), nrow=length(unique(whitefish.raster$Y)))
+
+# white fish covariate
+z <- rasterize(cbind(whitefish.raster$X,whitefish.raster$Y), r, whitefish.raster$DIST20M, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster$X),max(whitefish.raster$X)),
+     ylim=cbind(min(whitefish.raster$Y),max(whitefish.raster$Y)), main="Distance to 20m deep water")
+```
+
+A planar CRS is defined by a projection, datum, and a set of parameters. The parameters determine things like where the center of the map is. The number of parameters depends on the projection. 
+We know the  coordinate system in the whitefish data is ETRS89-extended / LAEA Europe, that is a UTM (easting-northing), with datum	European Terrestrial Reference System 1989 (https://en.wikipedia.org/wiki/European_Terrestrial_Reference_System_1989) while the Gob data has latitude and longitude as coordinates, so it has a geographic coordinate system: WGS84, based on the World Geodetic System 1984 datum. We need to recover the corresponding PROJ.4 notation for ETRS89, assign it to the respective raster file and then project the Gob raster.
+
+We can also specify the EPSG code, that in our case is EPSG:3035 for the whitefish raster and 7663 for temperature raster (http://epsg.io/4326).
+
+```{r}
+#https://mgimond.github.io/Spatial/coordinate-systems-in-r.html
+library(rgdal)
+
+# set original crs
+crs(r) = CRS("+init=epsg:3035") #https://epsg.io/3035    +proj=utm +zone=35 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs
+crs(mean.temp.r) = CRS("+proj=longlat +ellps=WGS84") # lat lon, geo.cs : CRS("+init=epsg:4326") 
+
+# project 
+mean.temp.pr <- projectRaster(mean.temp.r, crs=crs(r))
+plot(mean.temp.pr, main="Average shallow water temperature April-June2058", col= rev(heat.colors(56)))
+plot(z, add=T)
+```
+
+From the plot we can see how the temperature layer is actually bigger, we need to crop it.
+```{r}
+mean.temp.pr = crop(mean.temp.pr, e)
+plot(mean.temp.pr, main="Average shallow water temperature April-June2058", col= rev(heat.colors(56)))
+plot(z, add=T)
+```
+
+Now we need to upgrade the resolution of the raster layer. The R function `disaggregate`, in raster package disaggregate a RasterLayer to create a new RasterLayer with a higher resolution (smaller cells). The values in the new RasterLayer are the same as in the larger original cells. By specifying method="bilinear" values are locally interpolated.  
+If we use a disaggregate factor equal to $\frac{res_{temp}}{res_{wf.layer}}$ we notice that the final resolution of the temperature layer is not exactly equal to the one of the whitefish raster, this is because the factor is automatically rounded to an integer. We will use another function: `resample` , that transfers values between non matching Raster objects, using bilinear interpolation.
+```{r}
+# Look at the resolution
+mean.temp.pr
+r
+
+# upscale
+mean.temp.upsc = disaggregate(mean.temp.pr, fact = res(mean.temp.pr)/res(r))
+plot(mean.temp.upsc,  main="Average shallow water temperature April-June2058", col= rev(heat.colors(56)))
+res(mean.temp.upsc)    #  = 278.0000, 303.3333
+
+mean.temp.upsc=resample(mean.temp.upsc,r, method="bilinear") #with categorical variable use ngb for nearest neighbor
+res(mean.temp.upsc)    #  = 299.7464, 300.4331
+
+```
+
+We have the converted raster for our variable of interest, finally we recover the dataset containing the projected coordinates and the corresponding temperature vale, so that it can be merged with the covariates from whitefish.dat file , and try to merge them.
+
+```{r}
+whitefish.dat.new=as.data.frame(mean.temp.upsc, xy=T)
+
+# extract white fish covariates of interest
+# BOTTOMCLS - Bottom type classification, a categorical variable with classes 0:5
+# DIS_SAND  - distance to sandy shore, continuous variable
+# FE300ME   - The average fetch (openness/exposure) over all directions, continuous variable
+# ICELAST09 - The last ice cover date in winter 2009-10, continuous variable
+# RIVERS    - Influence of rivers (~weighted average distance to river mouths), continuous variable
+# SAL910WIN - Winter salinity in 2009-2010, continuous variable
+# DIST20M - distance to deep
+# CHL_A
+names = c("FE300W" , "BOTTOMCLS", "DIS_SAND", "FE300ME", "ICELAST09", "RIVERS", "SAL910WIN", "DIST20M", "CHL_A")
+for (var in names) {
+  z = rasterize(cbind(whitefish.raster$X,whitefish.raster$Y), r, whitefish.raster[,var], fun=mean)
+  data1= as.data.frame(z, xy=T)
+  # merge
+  whitefish.dat.new = merge.data.frame(whitefish.dat.new, data1, by= c("x", "y" ))
+}
+
+colnames(whitefish.dat.new) = c("E_etrs89", "N_etrs89", "TEMP", names)
+# remove NA
+whitefish.dat.new = whitefish.dat.new[complete.cases(whitefish.dat.new ),]
+
+head(whitefish.dat.new)
+
+```
+
+Let's have a look at our mean temperature variable, we consider it before the coordinate and scaling transformations. 
+```{r}
+dd=as.data.frame(mean.temp.layer, xy=T, na.rm=F)
+hist(dd$layer)
+# NA cells
+plot(dd$x,dd$y, col=(heat.colors(n)[scl(dd[,3]) * (n-1) + 1]), main ="NA cells")
+points(dd[is.na(dd$layer),1], dd[is.na(dd$layer),2], pch=15, cex=1)
+# temp=0 cells
+plot(dd$x,dd$y, col=(heat.colors(n)[scl(dd[,3]) * (n-1) + 1]), main ="temp=0 cells")
+points(dd[dd$layer==0,1], dd[dd$layer==0,2], pch=15, cex=0.2 )
+
+plot(dd[dd$layer!=0,1], dd[dd$layer!=0,2], col=(heat.colors(n)[scl(dd[dd$layer!=0,3]) * (n-1) + 1]) , main ="temp!=0")
+```
+The variables from whitefish raster file have no land values, but a lot of NA, we will discard.
+```{r}
+z <- rasterize(cbind(whitefish.raster$X,whitefish.raster$Y), r, whitefish.raster$DIST20M, fun=mean)
+plot(z)
+hist(z)
+zz=as.data.frame(z,xy=T)
+# NA cells
+plot(zz$x,zz$y, col=(terrain.colors(n)[scl(zz[,3]) * (n-1) + 1]), main ="NA cells")
+points(zz[is.na(zz$layer),1], zz[is.na(zz$layer),2], pch=15, cex=1)
+length(which(is.na(zz$layer))) # 2260000
+
+length(which(zz$layer==0)) # 32000 
+plot(zz[zz$layer!=0,1], zz[zz$layer!=0,2], col=(terrain.colors(n)[scl(zz[zz$layer!=0,3]) * (n-1) + 1]) , main ="temp!=0")
+
+plot(zz$x,zz$y, col=(terrain.colors(n)[scl(zz[,3]) * (n-1) + 1]), main ="layer =0 cells")
+points(zz[zz$layer==0,1], zz[zz$layer==0,2], col=1, pch=16)
+
+```
+
+We substitute each 0 temperature values in mean.temp with the average values of their 8 closest cells. We still get some 0 zero cells, as they are probably surrounded by other 0 cells.
+```{r}
+#subsitute 0 cells with mean values of surrounding cells
+fill.0 <- function(x, i=5) {
+  if(is.na(x[i]) | x[i] !=0 )  return(x[i])
+  else    return( mean(x[-i], na.rm=T ))
+  
+}  
+
+mean.temp.layer2 <- focal(mean.temp.layer, w = matrix(1,3,3), fun = fill.0,pad=T)
+hist(mean.temp.layer2 )
+hist(mean.temp.layer)
+```
+We want to get rid of all zero cells. We try by removing all land cells from the data, then we will look at the closest raster cell for each data-point in the whitefish.dat file.
+```{r}
+# remove land cells
+mean.temp.r[mean.temp.r==0]=NA
+```
+
+
+
+Let's create a function that automatize the steps above:
+```{r}
+merge_raster.variable_df0 = function(file, var, band, level, final.raster , var.names =c(), lon.name="lon", lat.name = "lat", lon.final ="X", lat.final="Y",land.val=0, remove.land=T) {
+  "
+  This function takes as arguments
+  file : string, path of raster file we want to extract a layer from   (EX Smartsea Gob file )
+  var : name of the raster.layer variable we want to extract from file  (EX temperature)
+  band :  number or vector, bands to consider (averaged)
+  level : number or vector, levels to consider (averaged)
+  final.raster : dataframe from which we extra    ct raster file we want to conform our layer with 
+  var.names : variables names of final.raster file we want to include in the output dataframe (optional)
+  lon.name : name of the longitude variable from file, default lon 
+  lat.name : name of the latitude variable from file, default lat  
+  lon.final : name of longitude variable from final.raster, default X
+  lat.final : name of latitude variable from final.raster, default Y  
+  
+  and returns a list with 2 objects 
+  data.frame : df with  longitude, latitude (in the same crs and resolution of r.final), the  variable of interest from file and other variables from final.raster (listed in var.names)
+  raster.layer : raster layer of the variable of interest in the same crs and resolution of r.final
+  "
+  
+  library(raster)
+  library(rgdal)
+  
+  # layer with average band and level var
+  rast0 = raster(file, varname=var,  band = band[1], level = level[1]) # raster with proper extension
+  mean.layer = overlay(-rast0, rast0, fun ="sum") # create a 0 layer to start with
+  for (f in file) {
+    for (i in band) {
+    for (j in level) {
+      rast = raster(f, varname=var,  band = i, level = j)
+      mean.layer = overlay(rast, mean.layer, fun =sum)
+    }
+  }
+  } 
+  mean.layer = mean.layer/(length(band)*length(level)*length(file))
+  
+  # remove land cells
+  if(remove.land) {
+    mean.layer[round(mean.layer,1)==land.val]=NA
+    mean.layer[round(mean.layer,1)==0]=NA
+    }
+  else {
+    # subsitute 0 cells with mean values of surrounding cells
+    fill.0 = function(x, i=5) {
+      if(is.na(x[i]) | x[i] !=0 )  return(x[i])
+      else    return( mean(x[-i], na.rm=T ))
+    }  
+   mean.layer = focal(mean.layer, w = matrix(1,3,3), fun = fill.0,pad=T)    
+  }
+
+  # raster file
+  lon = raster(file, varname=lon.name)
+  lat = raster(file, varname=lat.name)
+  d =  cbind(values(lon), values(lat), values(mean.layer))
+  d = na.exclude(d)
+  # from df to raster
+  e = extent(cbind(d[,1],d[,2]))
+  r = raster(e, ncol=length(unique(d[,1])), nrow=length(unique(d[,2])))
+  mean.r = rasterize(d[,1:2],r, d[,3], fun=mean)
+  
+  # extrat quantities from final raster file
+  e.final = extent(cbind(final.raster[, lon.final],final.raster[, lat.final]))
+  r.final = raster(e.final, ncol=length(unique(final.raster[, lon.final])), nrow=length(unique(final.raster[, lat.final])))
+  res.final = res(r.final)
+  crs.final = crs(r.final) 
+  if(is.na(crs.final)) crs.final=CRS("+init=epsg:3035")
+  
+  # set original crs
+  if(is.na(crs(mean.r))) crs(mean.r) = CRS("+proj=longlat +ellps=WGS84") # lat lon, geo.cs : CRS("+init=epsg:4326") 
+  # project 
+  mean.pr = projectRaster(mean.r, crs=crs.final)
+
+  # crop
+  mean.pr = crop(mean.pr, e.final)
+
+  # upscale
+  mean.upsc = disaggregate(mean.pr, fact = res(mean.pr)/res.final)
+  mean.upsc = resample(mean.upsc,r.final, method="bilinear")
+  
+  # merge the two data as a new data frame
+  dat.new=as.data.frame(mean.upsc, xy=T)
+  for (variable in var.names) {
+    z = rasterize(cbind(final.raster[, lon.final], final.raster[,lat.final]), r.final, final.raster[,variable], fun=mean)
+    data1= as.data.frame(z, xy=T)
+    # merge : only the obs from final.raster variables are keeped
+    dat.new = merge.data.frame(dat.new, data1, by= c("x", "y" ), all.x = F, all.y = T)
+  }
+  
+  colnames(dat.new) = c("E_etrs89", "N_etrs89", var, var.names)
+  # remove NA
+  dat.new = dat.new[complete.cases(dat.new ),]
+  
+  return(list("data.frame" = dat.new, "raster.layer" = mean.upsc))
+}
+```
+
+```{r}
+#try the function
+lista = merge_raster.variable_df0("/home/piailari/Documents/thesis/SampleSmartSea/A001/NORDIC-GOB_1m_20000101_20001231_grid_T.nc", var = 
+                     "votemper", band = 4:6, level = 1:3, final.raster = whitefish.raster, var.names = c("FE300ME"), lon.name = "nav_lon", lat.name = "nav_lat")
+
+head(lista$data.frame)
+plot(lista$raster.layer)
+```
+
+Note: we removed all land raster cells , ie the one where temperature is equal to 0.
+Another approach could be to fill such cells with the average value from their nearest neighbors, if 'remove.land'=F, such method is applied, considering the 8 nearest cells. In this way, though we still have have 15000 raster cells with 0 temperature, as they are surrounded just by land cells.
+```{r}
+hist(lista$data.frame$votemper, xlab = "temp")
+
+lista0 = merge_raster.variable_df0("/home/piailari/Documents/thesis/SampleSmartSea/A001/NORDIC-GOB_1m_20000101_20001231_grid_T.nc", var = 
+                     "votemper", band = 4:6, level = 1:3, final.raster = whitefish.raster, var.names = c("FE300ME"), lon.name = "nav_lon", lat.name = "nav_lat",
+                     remove.land=F)
+hist(lista0$data.frame$votemper, xlab = "temp")
+temp0=lista0$data.frame[lista0$data.frame$votemp==0, ]
+plot(lista0$raster.layer)
+points(temp0[,1], temp0[,2], col=2, pch=20, cex=0.3)
+legend("topleft", legend = "temp = 0", pch=16, col=2, bty = "n")
+```
+
+
+
+The next task, is to recover the raster cell to which each observation contained in the whitefish.dat file belongs. We will then select the corresponding temperature values and merge such values with the latter dataset
+
+```{r}
+whitefish.dat = read.table("data_whitefish.txt", header=TRUE, sep="\t")
+head(whitefish.dat)
+head(lista$data.frame)
+
+plot(lista$raster.layer)
+points(whitefish.dat$E_etrs89, whitefish.dat$N_etrs89, col=1, pch=16, cex=0.3)
+legend("topleft", legend = "whitefish survey stations", pch=20, col=1, bty = "n", cex=0.9)
+
+```
+
+For each whitefish data-point, we look for the cell in our raster, such that is the closest to it, by computing the square euclidean distances among the data from the two files. 
+
+```{r}
+rast.index=c()
+for (i in 1:nrow(whitefish.dat)) {
+  dist.E=(abs(lista$data.frame$E_etrs89- whitefish.dat$E_etrs89[i]))**2  
+  dist.N=(abs(lista$data.frame$N_etrs89- whitefish.dat$N_etrs89[i]))**2
+  # square distance
+  d =dist.E+dist.N 
+  # closest cell
+  rast.index[i] = which.min(d) 
+}
+
+# plot some of the sites
+plot(lista$raster.layer)
+pos =c(1,10,50,100,150,200)
+points(whitefish.dat$E_etrs89[pos], whitefish.dat$N_etrs89[pos], col=1, pch=16, cex=0.8)
+points(lista$data.frame$E_etrs89[rast.index[pos]], lista$data.frame$N_etrs89[rast.index[pos]], col=2, pch=1, cex=1.4)
+legend("topleft", legend = c("whitefish site", "closest raster point"), pch = c(16,1), col=c(1,2), bty = "n")
+```
+
+```{r}
+TEMP = lista$data.frame$votemper[rast.index]
+whitefish.dat.temp =data.frame(whitefish.dat, TEMP)
+head(whitefish.dat.temp)
+
+length(which(TEMP==0)) #0 obs with 0 value, ie temperature here was not measured:land spot
+```
+
+\newpage
+
+### Final data frame construction 
+```{r}
+library(ncdf4)
+library(raster)
+```
+
+Let's have a look at one of the file, from the latest SeaSmart data repositories and test the function we built. We took  the 2010 monthly temperature
+```{r, }
+setwd("/home/piailari/Documents/thesis/SmartSeaTemperature_monthly_0-9m")
+
+data= open_nc("votemper_0-9_A002_2010_mean.nc")
+hist(data$votemper)
+
+apr.t=raster("votemper_0-9_A001_1979_mean.nc", varname="votemper", band =4)
+may.t=raster("votemper_0-9_A001_1979_mean.nc", varname="votemper", band =5)
+june.t=raster("votemper_0-9_A001_1979_mean.nc", varname="votemper", band =6)
+par(mfrow=c(1,3))
+plot(apr.t, main ="April2010")
+plot(may.t, main ="May2010")
+plot(june.t, main ="June2010")
+
+mean.t=overlay(apr.t, may.t, june.t, fun="mean")
+par(mfrow=c(1,1))
+plot(mean.t)
+```
+```{r, results="hide"}
+path ="/home/piailari/Documents/thesis/SmartSeaTemperature_monthly_0-9m/votemper_0-9_A002_2010_mean.nc"
+lista10 = merge_raster.variable_df0(path, var = "votemper", band = 4:6, level = 1:3, final.raster = whitefish.raster, lon.name = "nav_lon", lat.name = "nav_lat")
+```
+
+```{r}
+plot(lista10$raster.layer)
+head(lista10$data.frame)
+```
+
+We merge it to whitefishdata, as done previously. First we load the full whitefish dataframe, and select the covariates of interest.
+
+```{r}
+library(readxl)
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+data.full = read_xlsx("bsg653_3.xlsx")
+
+colnames(data.full)
+whitefish.dat = data.full[, c("N", "E", "FE300ME" , "BOTTOMCLS", "DIS_SAND", "FE300ME", "ICELAST09", "RIVERS", "SAL910WIN", "DIST20M", "CHL_A")]
+colnames(whitefish.dat)[1:2]= c("N_etrs89", "E_etrs89")
+```
+
+```{r}
+rast.index=c()
+for (i in 1:nrow(whitefish.dat)) {
+  dist.E=(abs(lista10$data.frame$E_etrs89- whitefish.dat$E_etrs89[i]))**2  
+  dist.N=(abs(lista10$data.frame$N_etrs89- whitefish.dat$N_etrs89[i]))**2
+  # square distance
+  d =dist.E+dist.N 
+  # closest cell
+  rast.index[i] = which.min(d) 
+}
+
+# plot some of the sites
+plot(lista10$raster.layer)
+pos =c(1,10,50,100,150,200,300,420,550)
+points(whitefish.dat$E_etrs89[pos], whitefish.dat$N_etrs89[pos], col=1, pch=16, cex=0.8)
+points(lista10$data.frame$E_etrs89[rast.index[pos]], lista10$data.frame$N_etrs89[rast.index[pos]], col=2, pch=1, cex=1.4)
+legend("topleft", legend = c("whitefish site", "closest raster point"), pch = c(16,1), col=c(1,2), bty = "n")
+```
+
+```{r}
+TEMP = lista10$data.frame$votemper[rast.index]
+whitefish.dat.temp =data.frame(whitefish.dat, TEMP)
+head(whitefish.dat.temp)
+
+length(which(TEMP==0)) #0 obs with 0 value, ie temperature here was not measured:land spot
+```
+
+
+Since all of the results are model based and the last "historical year" in those model runs is 2005 we would use years 1995-2005 to represent the "current values" for temperature and salinity. We build the training temp and salinity data so that we take  
+* temp: the average of the temperature values in April-June over all years in 1995-2005 in water depths 0-9   
+* salinity: the average of the monthly salinity values over all months in years 1995-2005 in water depths 0-9  
+
+We first focus on the temperature, measured in April-May. this time the depth is already set to 0-9m, so we don't need to worry about the layer levels.
+
+We modify the function, so that it fits our new data
+
+```{r}
+merge_raster.variable_df = function(file, var, band, level, final.raster , final.dat , var.names =c(), lon.name="lon", lat.name = "lat", lon.final ="X", lat.final="Y", land.val=0) {
+  "
+  This function takes as arguments
+  file : vector of strings, paths of raster files we want to extract a layer from   (EX Smartsea Gob file )
+  var : name of the raster.layer variable we want to extract from file  (EX temperature)
+  band :  number or vector, bands to consider (averaged)
+  level : number or vector, levels to consider (averaged)
+  final.raster : dataframe from which we extra the raster file we want to conform our layer with 
+  final.dat : dataframe to which we add our final variable (with coordinates: E_etrs89, N_etrs89 !!!)
+  var.names : variables names of final.raster file we want to include in the output dataframe (optional)
+  lon.name : name of the longitude variable from file, default lon 
+  lat.name : name of the latitude variable from file, default lat  
+  lon.final : name of longitude variable from final.raster, default X
+  lat.final : name of latitude variable from final.raster, default Y  
+  
+  and returns a list with 2 objects 
+  data.frame : df with  longitude, latitude (in the same crs and resolution of r.final), the  variable of interest from file and other variables from final.raster (listed in var.names)
+  raster.layer : raster layer of the variable of interest in the same crs and resolution of r.final
+  "
+  
+  library(raster)
+  library(rgdal)
+  
+  # layer with average band and level var
+  rast0 = raster(file, varname=var,  band = band[1], level = level[1]) # raster with proper extension
+  mean.layer = overlay(-rast0, rast0, fun ="sum") # create a 0 layer to start with
+  for (f in file) {
+    for (i in band) {
+    for (j in level) {
+      rast = raster(f, varname=var,  band = i, level = j)
+      mean.layer = overlay(rast, mean.layer, fun =sum)
+    }
+  }
+  } 
+  mean.layer = mean.layer/(length(band)*length(level)*length(file))
+  
+  # remove land cells
+  mean.layer[round(values(mean.layer),1)==land.val]=NA
+  mean.layer[round(mean.layer,1)==0]=NA
+
+  # raster file
+  lon = raster(file, varname=lon.name)
+  lat = raster(file, varname=lat.name)
+  d =  cbind(values(lon), values(lat), values(mean.layer))
+  d = na.exclude(d)
+  # from df to raster
+  e = extent(cbind(d[,1],d[,2]))
+  r = raster(e, ncol=length(unique(d[,1])), nrow=length(unique(d[,2])))
+  mean.r = rasterize(d[,1:2],r, d[,3], fun=mean)
+  
+  # extrat quantities from final raster file
+  e.final = extent(cbind(final.raster[, lon.final],final.raster[, lat.final]))
+  r.final = raster(e.final, ncol=length(unique(final.raster[, lon.final])), nrow=length(unique(final.raster[, lat.final])))
+  res.final = res(r.final)
+  crs.final = crs(r.final) 
+  if(is.na(crs.final)) crs.final=CRS("+init=epsg:3035")
+  
+  # set original crs
+  if(is.na(crs(mean.r))) crs(mean.r) = CRS("+proj=longlat +ellps=WGS84") # lat lon, geo.cs : CRS("+init=epsg:4326") 
+  # project 
+  mean.pr = projectRaster(mean.r, crs=crs.final)
+
+  # crop
+  mean.pr = crop(mean.pr, e.final)
+
+  # upscale
+  mean.upsc = disaggregate(mean.pr, fact = res(mean.pr)/res.final)
+  mean.upsc = resample(mean.upsc,r.final, method="bilinear")
+
+  # create a new data frame
+  dat.new=as.data.frame(mean.upsc, xy=T)
+  colnames(dat.new) = c("E_etrs89", "N_etrs89", var)
+  # remove NA
+  dat.new = dat.new[complete.cases(dat.new ),]
+  
+  # merge it with the final data frame 
+  rast.index=c()
+  for (i in 1:nrow(final.dat)) {
+    dist.E=(abs(dat.new$E_etrs89- final.dat$E_etrs89[i]))**2  
+    dist.N=(abs(dat.new$N_etrs89- final.dat$N_etrs89[i]))**2
+    # square distance
+    d =dist.E+dist.N 
+    # closest cell
+    rast.index[i] = which.min(d) 
+  }
+  
+  var.f = dat.new[rast.index,3]
+  final.dat = final.dat[,var.names]
+  df =data.frame(final.dat, var =var.f)
+  
+  return(list("data.frame" = df, "raster.layer" = mean.upsc))
+}
+```
+
+We first load the final raster file and dataframe 
+```{r}
+### whitefish raster data
+setwd("/home/piailari/Documents/thesis")
+whitefish.raster = read.table("predraster_whitefish.txt", header=TRUE, sep="\t")
+
+### whitefish data frame
+library(readxl)
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+# covariates of intererst
+variables = c("N_etrs89", "E_etrs89", "FE300ME" , "BOTTOMCLS", "DIS_SAND", "ICELAST09", "RIVERS", "SAL910WIN", "DIST20M", "CHL_A")
+```
+
+Now we select the  files from years 1995-2005
+```{r}
+path ="/home/piailari/Documents/thesis/SmartSeaTemperature_monthly_0-9m/"
+years=1995:2005
+names.t=c()
+for(i in 1:length(years)) names.t[i]= paste(path, "votemper_0-9_A001_",years[i],"_mean.nc", sep = "")
+```
+
+and apply the function
+```{r, results = "hide"}
+l = merge_raster.variable_df(names.t, var = "votemper", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                             final.dat = whitefish.dat , var.names = variables , lon.name = "nav_lon", lat.name = "nav_lat")
+
+```
+
+```{r}
+plot(l$raster.layer, main=c("Average temperature April-June 1995-2005", "0-9m depth"))
+colnames(l$data.frame)[ncol(l$data.frame)] ="TEMP09M"
+head(l$data.frame)
+```
+
+We repeat the procedure for salinity
+
+```{r}
+path ="/home/piailari/Documents/thesis/SmartSeaSalinity_monthly_0-9m/"
+years=1995:2005
+names.s=c()
+for(i in 1:length(years)) names.s[i]= paste(path, "vosaline_0-9_A001_",years[i],"_mean.nc", sep = "")
+```
+
+and apply the function
+```{r,results = "hide"}
+ls = merge_raster.variable_df(names.s, var = "vosaline", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                             final.dat = whitefish.dat , var.names = variables , lon.name = "nav_lon", lat.name = "nav_lat")
+```
+
+We get the final dataset.
+```{r}
+plot(ls$raster.layer, main=c("Average salinity April-June 1995-2005", "0-9m depth"))
+
+# final data
+data.whitefish.final = data.frame(l$data.frame, "SALT09M" =ls$data.frame$var)
+head(data.whitefish.final)
+
+# write.table(data.whitefish.final, file="white_fishes_final.txt", row.names=FALSE, col.names=TRUE)
+```
+
+Finally we createt the raster data file with all the covariates of interest
+```{r, results="hide"}
+#df.temp = as.data.frame(l$raster.layer, xy=T)
+#df.salt = as.data.frame(ls$raster.layer, xy=T)
+#raster.whitefish.final = merge(df.temp, df.salt, by= c("x", "y"))
+#colnames(raster.whitefish.final) = c("x", "y", "TEMP09M", "SALT09M")
+
+covariates = c( "FE300ME" ,  "BOTTOMCLS", "DIS_SAND"  ,"ICELAST09", "RIVERS"    ,"SAL910WIN" ,"DIST20M"  , "CHL_A" )
+l.rast = merge_raster.variable_df0(names.t, var = "votemper", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                              var.names = covariates , lon.name = "nav_lon", lat.name = "nav_lat")
+ls.rast = merge_raster.variable_df0(names.s, var = "vosaline", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                              var.names = c( "FE300ME") , lon.name = "nav_lon", lat.name = "nav_lat")
+
+raster.whitefish.final = l.rast$data.frame
+colnames(raster.whitefish.final)[3] ="TEMP09M"
+raster.whitefish.final =data.frame(raster.whitefish.final, "SALT09M" =ls.rast$data.frame[,"vosaline"])
+head(raster.whitefish.final)
+
+# write.table(raster.whitefish.final, file="white_fishes_final_raster.txt", row.names=FALSE, col.names=TRUE)
+
+```
+
+\newpage
+
+### Future data
+We repeat the previous steps, considering data predicted for the last 11 years available: 2049-2059, in order to create the data we will use for our climate change predictions. 
+
+We first load the final raster file and dataframe 
+```{r}
+### whitefish raster data
+setwd("/home/piailari/Documents/thesis")
+whitefish.raster = read.table("predraster_whitefish.txt", header=TRUE, sep="\t")
+
+### whitefish data frame
+library(readxl)
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+# covariates of intererst
+variables = c("N_etrs89", "E_etrs89", "FE300ME" , "BOTTOMCLS", "DIS_SAND", "RIVERS",  "DIST20M", "CHL_A")
+```
+
+  Now we select the  files from years 2049-2059
+```{r}
+path ="/home/piailari/Documents/thesis/SmartSeaTemperature_monthly_0-9m/"
+years=2049:2059
+names.t=c()
+for(i in 1:length(years)) names.t[i]= paste(path, "votemper_0-9_A005_",years[i],"_mean.nc", sep = "")
+```
+
+and apply the function
+```{r, results = "hide"}
+l.fut = merge_raster.variable_df(names.t, var = "votemper", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                             final.dat = whitefish.dat , var.names = variables , lon.name = "nav_lon", lat.name = "nav_lat")
+
+```
+
+```{r}
+plot(l.fut$raster.layer, main=c("Average temperature April-June 20495-2059", "0-9m depth"))
+colnames(l.fut$data.frame)[ncol(l.fut$data.frame)] ="TEMP09M_FUT"
+head(l.fut$data.frame)
+```
+
+We repeat the procedure for salinity
+
+```{r}
+path ="/home/piailari/Documents/thesis/SmartSeaSalinity_monthly_0-9m/"
+years=2049:2059
+names.s=c()
+for(i in 1:length(years)) names.s[i]= paste(path, "vosaline_0-9_A005_",years[i],"_mean.nc", sep = "")
+```
+
+and apply the function
+```{r,results = "hide"}
+ls.fut = merge_raster.variable_df(names.s, var = "vosaline", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                             final.dat = whitefish.dat , var.names = variables , lon.name = "nav_lon", lat.name = "nav_lat")
+
+plot(ls$raster.layer, main=c("Average salinity April-June 2049-2059", "0-9m depth"))
+
+```
+
+We should add new data also for the variable: ICELAST09 (Rivers, CHL_A). The other covariates are assumed to be constant throught the years.  
+
+### ICELAST
+```{r}
+file= "/home/piailari/Documents/thesis/SmartSea_ice_season_statistics/ice_season_2058-2059_set_B005.nc"
+icelast.try =raster(file,  band = 1, var="last_ice_day", level = 1)  
+summary(icelast.try)
+str(icelast.try)
+plot(icelast.try)
+
+icelast.try1=nc_open(file)
+(icelast.try1$var$ice_season_length)
+```
+Note that land values are encoded with vale 549, not 0 as for temp and sainity.
+```{r}
+dd=as.data.frame(icelast.try, xy=T, na.rm=F)
+hist(dd$last_ice_day, 50)
+
+# icelast=1 cells
+n=52
+scl =function(x) 1-(x - min(x, na.rm = TRUE))/diff(range(x, na.rm = TRUE))
+plot(dd$x,dd$y, col=(heat.colors(n)[scl(dd[,3]) * (n-1) + 1]), main ="ice=1 cells")
+points(dd[dd$layer==1,1], dd[dd$layer==1,2], pch=15, cex=0.2 )
+
+# land cells
+scl =function(x) 1-(x - min(x, na.rm = TRUE))/diff(range(x, na.rm = TRUE))
+n=52
+plot(dd$x,dd$y, col=(heat.colors(n)[scl(dd[,3]) * (n-1) + 1]), main ="land cells")
+points(dd[(dd$last_ice_day)==549,1], dd[(dd$last_ice_day)==549,2], pch=15, cex=1)
+points(dd[round(dd$last_ice_day)==0,1], dd[round(dd$last_ice_day)==0,2], pch=15, cex=1, col=3)
+
+```
+
+
+When making predictions we do the following:
+
+  * Using the climate model results, calculate the last ice cover week for
+  each year 2050-2059 from "last_ice_day" variable. Take the mean of the
+  last ice cover weeks of 2050-2059. We denote this as ICELAST50s.
+  
+  * Using the climate model results, calculate the last ice cover week for
+  each year 2000-2009 from "last_ice_day" variable. Take the mean of the
+  last ice cover weeks of 2000-2005. We denote this as ICELAST10s.
+  
+  * Calculate the difference ICELASTdiff = ICELAST50s - ICELAST10s for
+  each prediction cell.
+  
+  * Construct a prediction variable ICELASTpred = ICELAST09 + ICELASTdiff
+  and use this when making predictions.
+
+Now we select the  files from years 2049-2059
+```{r, WARNINGS=f}
+path ="/home/piailari/Documents/thesis/SmartSea_ice_season_statistics/"
+years1= 2049:2058
+years2= 2050:2059
+names.i=c()
+for(i in 1:length(years1)) names.i[i]= paste(path, "ice_season_",years1[i],"-", years2[i], "_set_B005.nc", sep = "")
+
+li.fut = merge_raster.variable_df(names.i, var = "last_ice_day", band = 1, level = 1, final.raster = whitefish.raster, land.val = 549.2, 
+                              final.dat = whitefish.dat ,var.names = c( "ICELAST09") , lon.name = "nav_lon", lat.name = "nav_lat")
+plot(li.fut$raster.layer-365)
+# we set to 0 the values smaller than 365, that are years for wich we had no ice in the winter
+ICELAST50s = ifelse(li.fut$data.frame$var<=365,0,li.fut$data.frame$var)
+#From days to weeks
+ICELAST50s = ceiling(ICELAST50s/7)
+```
+
+Now we select the  files from years 1995-2005
+```{r, WARNINGS=F}
+path ="/home/piailari/Documents/thesis/SmartSea_ice_season_statistics/"
+years11= 1995:2004
+years22= 1996:2005
+names.ii=c()
+for(i in 1:length(years11)) names.ii[i]= paste(path, "ice_season_",years11[i],"-", years22[i], "_set_B001.nc", sep = "")
+
+li = merge_raster.variable_df(names.ii, var = "last_ice_day", band = 1, level = 1, final.raster = whitefish.raster, land.val = 549.3,
+                              final.dat = whitefish.dat ,var.names = c( "ICELAST09") , lon.name = "nav_lon", lat.name = "nav_lat")
+plot(li$raster.layer-365)
+# we set to 0 the values smaller than 365, that are years for wich we had no ice in the winter
+ICELAST10s = ifelse(li$data.frame$var<=365,0,li$data.frame$var)
+#From days to weeks
+ICELAST10s = ceiling(ICELAST10s/7)
+
+ICELASTdiff = ICELAST50s - ICELAST10s
+ICELAST_FUT=ICELASTdiff+whitefish.dat$ICELAST09
+ICELAST_FUT=ifelse(ICELAST_FUT<=0,0,ICELAST_FUT)
+```
+
+### Final data future
+We get the final dataset.
+```{r}
+
+# final data
+names(l$data.frame)[11]="TEMP09M_FUT" 
+data.whitefish.final.fut = data.frame(l$data.frame, "SALT09M_FUT" =ls$data.frame$var, "ICELAST_FUT"=ICELASTdiff+whitefish.dat$ICELAST09)
+head(data.whitefish.final.fut)
+
+#  write.table(data.whitefish.final.fut, file="white_fishes_final_fut.txt", row.names=FALSE, col.names=TRUE)
+```
+
+Finally we createt the raster data file with all the covariates of interest
+```{r, results="hide"}
+df.temp = as.data.frame(l$raster.layer, xy=T)
+df.salt = as.data.frame(ls$raster.layer, xy=T)
+#raster.whitefish.final = merge(df.temp, df.salt, by= c("x", "y"))
+#colnames(raster.whitefish.final) = c("x", "y", "TEMP09M", "SALT09M")
+
+covariates = c( "FE300ME" ,  "BOTTOMCLS", "DIS_SAND"  , "RIVERS"    ,"DIST20M"  , "CHL_A" )
+l.rast = merge_raster.variable_df0(names.t, var = "votemper", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                              var.names = covariates , lon.name = "nav_lon", lat.name = "nav_lat")
+ls.rast = merge_raster.variable_df0(names.s, var = "vosaline", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                              var.names = c( "FE300ME") , lon.name = "nav_lon", lat.name = "nav_lat")
+li1.rast = merge_raster.variable_df0(names.i, var = "last_ice_day", band = 1, level = 1, final.raster = whitefish.raster, land.val=549.2,
+                              var.names = c( "ICELAST09") , lon.name = "nav_lon", lat.name = "nav_lat")
+li2.rast = merge_raster.variable_df0(names.ii, var = "last_ice_day", band = 1, level = 1, final.raster = whitefish.raster, land.val=549.3,
+                              var.names = c( "ICELAST09") , lon.name = "nav_lon", lat.name = "nav_lat")
+colnames(li1.rast$data.frame)[3]= "last_ice_day50"
+lifin.rast=merge(li1.rast$data.frame,li2.rast$data.frame, by=c("E_etrs89", "N_etrs89"))
+# we set to 0 the values smaller than 365, that are years for wich we had no ice in the winter
+ICELAST50s.fut = ifelse(lifin.rast$last_ice_day50<=365,0,lifin.rast$last_ice_day50-365)
+ICELAST10s.fut = ifelse(lifin.rast$last_ice_day<=365,0,lifin.rast$last_ice_day-365)
+
+ICELAST_FUT = ceiling(ICELAST50s.fut/7) - ceiling(ICELAST10s.fut/7) + li1.rast$data.frame$ICELAST09
+ICELAST_FUT =ifelse(ICELAST_FUT <=0,0,ICELAST_FUT )
+df.ice= data.frame(lifin.rast[,1:2], ICELAST_FUT)
+
+raster.whitefish.ts = l.rast$data.frame
+colnames(raster.whitefish.ts)[3] ="TEMP09M_FUT"
+raster.whitefish.ts =data.frame(raster.whitefish.ts, "SALT09M_FUT" =ls.rast$data.frame[,"vosaline"])
+
+raster.whitefish.final = merge(raster.whitefish.ts, df.ice, by= c("E_etrs89", "N_etrs89"))
+head(raster.whitefish.final)
+
+# write.table(raster.whitefish.final, file="white_fishes_final_raster_fut.txt", row.names=FALSE, col.names=TRUE)
+
+```
+
+
+We produce the following Maps of temperature, salinity and last ice cover week for current
+days and future and their differences. That is, we draw 3 figures each of
+which contains three maps as follows:
+* Figure 1: ICELAST09, ICELAST50s, ICELASTdiff
+* Figure 2: TEMP10s, TEMP50s, TEMPdiff
+* Figure 3: SALINITY10s, SALINITY50s, SALINITYdiff
+
+```{r}
+par(mfrow=c(1,3))
+
+# temperature
+plot(l$raster.layer, main="Temp 1995-2005")
+plot(l.fut$raster.layer, main="Temp 2049-2059")
+plot(l.fut$raster.layer-l$raster.layer, main="Diff Temp")
+
+# salinity
+plot(ls$raster.layer, main="Salt 1995-2005")
+plot(ls.fut$raster.layer, main="Salt 2049-2059")
+plot(ls.fut$raster.layer-ls$raster.layer, main="Diff salt")
+
+# icelast (days)
+plot(li$raster.layer, main="Icelast 1995-2005")
+plot(li.fut$raster.layer, main="Icelast 2049-2059")
+plot(li.fut$raster.layer-li$raster.layer, main="Diff icelast")
+```
+
+  

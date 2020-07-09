@@ -1,0 +1,140 @@
+---
+title: "Untitled"
+author: "Ilaria Pia"
+date: "10/07/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Merge Raster, SmartSea Data
+
+```{r}
+merge_raster.variable_df = function(file, var, band, level, final.raster , final.dat , var.names =c(), lon.name="lon", lat.name = "lat", lon.final ="X", lat.final="Y", land.val=0) {
+  "
+  This function takes as arguments
+  file : vector of strings, paths of raster files we want to extract a layer from   (EX Smartsea Gob file )
+  var : name of the raster.layer variable we want to extract from file  (EX temperature)
+  band :  number or vector, bands to consider (averaged)
+  level : number or vector, levels to consider (averaged)
+  final.raster : dataframe from which we extra the raster file we want to conform our layer with 
+  final.dat : dataframe to which we add our final variable (with coordinates: E_etrs89, N_etrs89 !!!)
+  var.names : variables names of final.raster file we want to include in the output dataframe (optional)
+  lon.name : name of the longitude variable from file, default lon 
+  lat.name : name of the latitude variable from file, default lat  
+  lon.final : name of longitude variable from final.raster, default X
+  lat.final : name of latitude variable from final.raster, default Y  
+  
+  and returns a list with 2 objects 
+  data.frame : df with  longitude, latitude (in the same crs and resolution of r.final), the  variable of interest from file and other variables from final.raster (listed in var.names)
+  raster.layer : raster layer of the variable of interest in the same crs and resolution of r.final
+  "
+  
+  library(raster)
+  library(rgdal)
+  
+  # layer with average band and level var
+  rast0 = raster(file, varname=var,  band = band[1], level = level[1]) # raster with proper extension
+  mean.layer = overlay(-rast0, rast0, fun ="sum") # create a 0 layer to start with
+  for (f in file) {
+    for (i in band) {
+    for (j in level) {
+      rast = raster(f, varname=var,  band = i, level = j)
+      mean.layer = overlay(rast, mean.layer, fun =sum)
+    }
+  }
+  } 
+  mean.layer = mean.layer/(length(band)*length(level)*length(file))
+  
+  # remove land cells
+  mean.layer[round(values(mean.layer),1)==land.val]=NA
+  mean.layer[round(mean.layer,1)==0]=NA
+
+  # raster file
+  lon = raster(file, varname=lon.name)
+  lat = raster(file, varname=lat.name)
+  d =  cbind(values(lon), values(lat), values(mean.layer))
+  d = na.exclude(d)
+  # from df to raster
+  e = extent(cbind(d[,1],d[,2]))
+  r = raster(e, ncol=length(unique(d[,1])), nrow=length(unique(d[,2])))
+  mean.r = rasterize(d[,1:2],r, d[,3], fun=mean)
+  
+  # extrat quantities from final raster file
+  e.final = extent(cbind(final.raster[, lon.final],final.raster[, lat.final]))
+  r.final = raster(e.final, ncol=length(unique(final.raster[, lon.final])), nrow=length(unique(final.raster[, lat.final])))
+  res.final = res(r.final)
+  crs.final = crs(r.final) 
+  if(is.na(crs.final)) crs.final=CRS("+init=epsg:3035")
+  
+  # set original crs
+  if(is.na(crs(mean.r))) crs(mean.r) = CRS("+proj=longlat +ellps=WGS84") # lat lon, geo.cs : CRS("+init=epsg:4326") 
+  # project 
+  mean.pr = projectRaster(mean.r, crs=crs.final)
+
+  # crop
+  mean.pr = crop(mean.pr, e.final)
+
+  # upscale
+  mean.upsc = disaggregate(mean.pr, fact = res(mean.pr)/res.final)
+  mean.upsc = resample(mean.upsc,r.final, method="bilinear")
+
+  # create a new data frame
+  dat.new=as.data.frame(mean.upsc, xy=T)
+  colnames(dat.new) = c("E_etrs89", "N_etrs89", var)
+  # remove NA
+  dat.new = dat.new[complete.cases(dat.new ),]
+  
+  # merge it with the final data frame 
+  rast.index=c()
+  for (i in 1:nrow(final.dat)) {
+    dist.E=(abs(dat.new$E_etrs89- final.dat$E_etrs89[i]))**2  
+    dist.N=(abs(dat.new$N_etrs89- final.dat$N_etrs89[i]))**2
+    # square distance
+    d =dist.E+dist.N 
+    # closest cell
+    rast.index[i] = which.min(d) 
+  }
+  
+  var.f = dat.new[rast.index,3]
+  final.dat = final.dat[,var.names]
+  df =data.frame(final.dat, var =var.f)
+  
+  return(list("data.frame" = df, "raster.layer" = mean.upsc))
+}
+```
+
+We first load the final raster file and dataframe 
+```{r}
+### whitefish raster data
+whitefish.raster = read.table("predraster_whitefish.txt", header=TRUE, sep="\t")
+
+### whitefish data frame
+library(readxl)
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+# covariates of intererst
+variables = c("N_etrs89", "E_etrs89", "FE300ME" , "BOTTOMCLS", "DIS_SAND", "ICELAST09", "RIVERS", "SAL910WIN", "DIST20M", "CHL_A")
+```
+
+Now we select the  files from years 1995-2005
+```{r}
+path ="/home/piailari/Documents/thesis/SmartSeaTemperature_monthly_0-9m/"
+years=1995:2005
+names.t=c()
+for(i in 1:length(years)) names.t[i]= paste(path, "votemper_0-9_A001_",years[i],"_mean.nc", sep = "")
+```
+and apply the function
+```{r, results = "hide"}
+l = merge_raster.variable_df(names.t, var = "votemper", band = 4:6, level = 1, final.raster = whitefish.raster, 
+                             final.dat = whitefish.dat , var.names = variables , lon.name = "nav_lon", lat.name = "nav_lat")
+
+```
+
+```{r}
+plot(l$raster.layer, main=c("Average temperature April-June 1995-2005", "0-9m depth"))
+colnames(l$data.frame)[ncol(l$data.frame)] ="TEMP09M"
+head(l$data.frame)
+```

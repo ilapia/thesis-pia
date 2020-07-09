@@ -1,0 +1,3761 @@
+---
+title: "White fishes"
+author: "Ilaria Pia"
+date: "18/03/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE)
+```
+
+## White fishes
+The Gulf of Bothnia is a brackish water basin between Sweden and Finland covering an area of approximately 600 × 120 km. Its coastal areas play a central role in the ecosystem and many Baltic fish stocks are dependent on the coastal regions for their reproduction. 
+White fish is a fresh water origin fish species that is found also from the northern parts of the brackish water Gulf of Bothnia (see Veneranta et al. (2013) ). 
+In addition White fishes are caught and sold for human consumption and, hence, they are economically important for local fishermen. 
+It spawns in shallow coastal areas in spring. The aim of the following analysis is to study how White fish spawns distribution is affected by environmental changes.
+
+### Data exploration 
+A number of sites along the Finnish and Swedish coastal region in the Gulf of Bothnia were sampled during 2009-2011 and several environmental variables were measured. Let's have a look at the data:
+```{r}
+setwd("/home/piailari/Documents/thesis")
+
+library("rstan")
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+
+library("raster")
+library(Rcpp)
+library(readxl)
+
+sourceCpp("Matern32Covariance.cpp")
+sourceCpp("expCovariance.cpp")
+  
+linearCovariance <- function(x1,x2,sigma2) {
+  # K = exponentialCovariance(x1,x2,l,sigma2)
+  # 
+  # A function that takes matrices x1 and x2 of input locations, lengthscale
+  # parameter l and magnitude parameter sigma2 and constructs a covariance
+  # matrix between f(x1) and f(x2) corresponding to an exponential covariance
+  # function. 
+  
+  K = as.matrix(x1)%*%diag(sigma2)%*%t(as.matrix(x2))
+  return(K)
+}
+
+# Load the data
+whitefish.dat.cov = read.table("white_fishes_final.txt", header=TRUE)
+whitefish.raster = read.table("white_fishes_final_raster.txt", header=TRUE)
+# full data, to get target variable
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+
+head(whitefish.dat.cov)
+summary(whitefish.dat.cov)
+library(packHV)
+par(mfrow =c(3,3))
+for (i in 3:ncol(whitefish.dat.cov)) { 
+  if(i!=8)
+      hist_boxplot(whitefish.dat.cov[,i], main = colnames(whitefish.dat.cov)[i], xlab="")
+}
+
+# remove y outliers (see below)
+# whitefish.dat.cov = whitefish.dat.cov[-order(whitefish.dat$WHISUM, decreasing = T)[1:4],]
+# whitefish.dat = whitefish.dat[-order(whitefish.dat$WHISUM, decreasing = T)[1:4],]
+
+```
+
+The coordinate system in the data is ETRS89 (http://www.euref.eu/euref_egrs.html) which is a 3D Cartesian coordinate system constructed specifically to European areas. Hence, we can use the coordinates as such. the coordinates are N_etrs89 and E_etrs89.
+
+We now examine the environmental covariates by plotting few of the raster layers
+```{r raster plot}
+# Visualize few environmental covariates
+ee <- extent(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89))
+rr <- raster(ee, ncol=length(unique(whitefish.raster$E_etrs89)), nrow=length(unique(whitefish.raster$N_etrs89)))
+# Visualize the study area
+raster.plot = function(var, title, points=F, e=ee, r = rr, boxplot=F, m=1,n=1, color=rev(terrain.colors(255))) {
+  par(mfrow=c(m,n))
+  z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, var, fun=mean)
+  plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+       ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=title, col=color)
+  # Plot the locations of sampling sites
+  if(points) points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+  if(boxplot) boxplot(var, main=titles[[i]])
+}
+```
+
+```{r}
+titles= list(c("Average temperature","May-June 1995-2005"),
+             "Average fetch over all directions", 
+             "Bottom type",
+             "Distance from sand", 
+             c("Last week of ice coverage", "2009"),
+             "Average distance to rivers mouths", 
+             "salwin",
+             "Distance to 20m deep water",
+             "clorophil a",
+             c("Average salinity ","May-June 1995-2005")
+             )
+for (i in 1:(ncol(whitefish.raster)-2)) {
+  raster.plot(whitefish.raster[,i+2], titles[[i]])
+}
+
+
+```
+
+Beside the coordinates the original dataset contains the variable 'YEAR' and other 33 environmental variables. The variables 'BOTTOM' And 'BOTTOMCOV'  are categorical.
+
+Sites locations
+```{r}
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), rr, rep(1,nrow(whitefish.raster)), fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+      ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main="Sample site locations", legend=F)
+ # Plot the locations of sampling sites
+ points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+ text(4820000,4300000, "Gulf of Bothnia", col=4, cex=0.8)
+ library(GISTools)
+ compassRose(5100000,4300000, cex = 0.6)
+ library(maps)  
+map.scale(4400000,4300000, ratio=F, metric = T, relwidth = 0.2)  
+```
+
+
+### Covariates
+Species distribution modeling is directly related to inferring species’ responses to environmental factors. We now select the environmental covariates.
+Gulf of Bothnia hosts rich variety of environmental conditions. Coastal areas are affected by inflows from land as well as shallow and complex topography. In the scale of Gulf of Bothnia, there is a gradient in river influence, salinity, temperature and length of ice cover period from north to south. We used seven real-valued and one categorical abiotic environmental covariates. These are the quantities we will consider :
+
+   * BOTTOMCLS - Bottom type classification, a categorical variable with classes
+                0 = not shallow
+                1 = open water
+                2 = other
+                3 = sand
+                4 = sand/mud
+                5 = sand/stone
+  *  DIS_SAND  - distance to sandy shore, continuous variable
+  * FE300ME   - The average fetch (openness/exposure) over all directions, continuous variable
+  * ICELAST09 - The last ice cover date in winter 2009-10, continuous variable
+  * RIVERS    - Influence of rivers (~weighted average distance to river mouths), continuous variable
+  * DIST20M - distance to 20 meters deep water
+  * CHL_A - chlorophyll a
+  * TEMP09M - mean temperature in Aprile-June 1975-2005 at 0-9 meters depth 
+  * SALT09M - mean salinity in Aprile-June 1975-2005 at 0-9 meters depth 
+
+ The dependent variable is
+   WHISUM - the number of whitefishes caught in sampling occasion.
+
+ An "off-set" variable / covariate for likelihood
+   VOLUME - the volume of water sampled
+We can notice that there are 7 observations where the variable volume has value 0, this is probably due to some error in collecing the data, and it causes problems in the model, as we would have troubles in computing the density, hence we discard such datapoints from the analysis.
+```{r}
+# Set up data
+s = as.matrix(cbind(whitefish.dat.cov$E_etrs89, whitefish.dat.cov$N_etrs89)) / 1000   # spatial coordinates in km
+x = matrix(0,nrow=nrow(s),ncol=15)      # intercept + 5 BOTTOMCLS classes + 8 continues covariates
+x[,1] = 1                             # Set the column corresponding to intercept to 1
+x[whitefish.dat$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+x[whitefish.dat$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+x[whitefish.dat$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+x[whitefish.dat$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+x[whitefish.dat$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+x[whitefish.dat$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xcont = as.matrix(cbind(whitefish.dat.cov$DIS_SAND,
+                        whitefish.dat.cov$FE300ME,
+                        whitefish.dat.cov$ICELAST09,
+                        whitefish.dat.cov$RIVERS,
+                        whitefish.dat.cov$DIST20M, 
+                        whitefish.dat.cov$CHL_A,
+                        whitefish.dat.cov$TEMP09M,
+                        whitefish.dat.cov$SALT09M))
+stdxcont = apply(xcont, 2, sd)
+mxcont = apply(xcont, 2, mean)
+x[,8:15] = t( apply( t(apply(xcont,1,'-',mxcont)),1,'/',stdxcont) )    # "standardize" the continuous covariates
+
+# End variable
+y = whitefish.dat$WHISUM               # number of counted fish larvae
+par(mfrow=c(1,2))
+hist(y, main ="number of larvae", 50)
+boxplot(y, main ="number of larvae")
+
+# Sampling effort; that is the volume of water sampled
+V = whitefish.dat$VOLUME
+hist(y/V, main ="number of larvae per volume", 50)
+boxplot(y/V, main ="number of larvae per volume")
+
+# 0 volume observations
+vol0 = which(V==0)
+cat(paste(c("Zero volume observations:", vol0)))
+# remove the observations with 0 volume
+y=y[-vol0] 
+x=x[-vol0,]
+s=s[-vol0,] 
+V=V[-vol0] 
+
+#duplicate location
+dupli= which(duplicated(s))
+y=y[-dupli] 
+x=x[-dupli,]
+s=s[-dupli,] 
+V=V[-dupli]
+# Prediction variables
+spred = as.matrix(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89)) / 1000  # spatial coordinates in km
+xpred = matrix(0,nrow=nrow(spred),ncol=15)      # intercept + 6 BOTTOMCLS classes + 5 continues covariates
+xpred[,1] = 1                             # Set the column corresponding to intercept to 1
+xpred[whitefish.raster$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+xpred[whitefish.raster$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+xpred[whitefish.raster$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+xpred[whitefish.raster$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+xpred[whitefish.raster$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+xpred[whitefish.raster$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xpredcont = as.matrix(cbind(whitefish.raster$DIS_SAND,
+                            whitefish.raster$FE300ME,
+                            whitefish.raster$ICELAST09,
+                            whitefish.raster$RIVERS,
+                            whitefish.raster$DIST20M,
+                            whitefish.raster$CHL_A, 
+                            whitefish.raster$TEMP09M,
+                            whitefish.raster$SALT09M))
+xpred[,8:15] = t( apply( t(apply(xpredcont,1,'-',mxcont)),1,'/',stdxcont) )    # "standardize" the continuous covariates
+
+```
+
+Look at the correlation among the continuous covariates. We are excluding the variable SAL910WIN as we have salinity data from SeaSmart dataset, which contains more accurate information about salinity and is highly correlated with SAL91WIN. Salinity and temperature are also really strong correlated, nevertheless we are keeping both of them since it has been shown they are really relevant envionmental variables for studying climate change effect on species distribution.
+```{r}
+library(corrplot)
+corr = cor(whitefish.dat.cov[, -c(1,2,4,8)])
+corrplot.mixed(corr, lower =  "number", upper="color", tl.pos = "lt", diag = "l" )
+plot(whitefish.dat.cov$TEMP09M, whitefish.dat.cov$SALT09M, pch=19, col=alpha("blue", 0.5))
+plot(whitefish.dat.cov$SAL910WIN, whitefish.dat.cov$SALT09M, pch=19, col=alpha("lightblue", 0.5))
+```
+Let s see how they are related to the target variable WHISUM, from which we discard the first 4 biggest values, as the right tail of the distribution is really long, but we have a couple of whitefisce abundance measurements that are definitely outliers. When inserting them in the model, it s not possible to predict such values.
+
+```{r}
+y0=ifelse(y==0, 0.01,y)
+y.logdens0= log(y0/V)
+cor=c()
+for(i in 8:ncol(x)) cor=c(cor,cor(y.logdens0,x[,i]))
+yx.cor=data.frame("Covariate"=rownames(p$summary_beta)[8:15], "Correlation x,y"=cor)
+
+y0.v=ifelse(y.v==0, 0.01,y.v)
+y.logdens0.v= log(y0.v/V)
+cor.v=c()
+for(i in 8:ncol(x)) cor.v=c(cor.v,cor(y.logdens0.v,x[,i]))
+yx.cor.v=data.frame("Covariate"=rownames(p$summary_beta)[8:15], "Correlation x,y"=cor.v)
+```
+
+```{r}
+which(sort(y, decreasing = T)>quantile(y,0.995)) # first bigger 4 obs
+nout=4
+
+#y.logdens0[!is.finite(y.logdens0)]=0
+par(mfrow=c(3,3))
+for (i in 8:15) { 
+  plot(x[,i], y.logdens0,
+       xlab = yx.cor[i-7,1], ylab="whitefish log density", main="target vs covariate", pch=18, col="lightblue")
+     legend("topright", paste0("cor(x,y)=", round(yx.cor[i-7,2],3)))
+}
+btcl=whitefish.dat.cov$BOTTOMCLS[-vol0]
+btcl=btcl[-dupli]
+plot(btcl, y.logdens0,
+       xlab = "BOTTOMCLS", ylab="whitefish log density", main="target vs covariate", pch=18, col="lightblue")
+
+par(mfrow=c(3,3))
+for (i in 8:15) { 
+  plot(x[,i], y.logdens0.v,
+       xlab = yx.cor.v[i-7,1], ylab="vendace log density", main="target vs covariate", pch=18, col="lightblue")
+     legend("topright", paste0("cor(x,y)=", round(yx.cor.v[i-7,2], 3)))
+}
+plot(btcl, y.logdens0.v,
+       xlab = "BOTTOMCLS", ylab="vendace log density", main="target vs covariate", pch=18, col="lightblue")
+
+```
+
+
+## Hierarchical specie distribution  model
+Hierarchical specie distribution model follows the generic hierarchical structure as presented by Wikle (2003), Cressie and Wikle (2011) and Banerjee et al. (2015). 
+$$[data|process, parameters] : \pi_Y (y(x, s)|f (x, s), \eta),$$
+$$[process|parameters] : \pi_f (f (x, s)| \theta),$$
+$$[parameters] : \pi(\eta, \theta),$$
+
+where we have three hierarchical layers. The first layer is the observation process which
+describes the conditional distribution of observations $y = [y_1 , \dots, y_n ]^T$ given the latent process $f (s)$ and observation model parameters, $\eta$. The data $y (x, s)$, are evaluated at spatial location $s\in D\in \mathbb{R}^2$ with associated covariates $x\in \mathbb{R}^d$. The second layer specifies the model for the latent
+process conditionally to the process model parameters $\theta$, and the third layer specifies the prior
+for all the unknown parameters , also called hyperparameters.  
+
+Such models can be extended to Hierarchical multivariate species distribution model, by considering $j\in 1\dots J$ different species. 
+
+  
+The variable of interest $y$ represents the number of whitefishes caught in sampling locations. Let $i\in 1\dots N$ represent the sampling sites and $j$ the number of different species considered (in this initial case we have $J=1$), we assume the response variable has distribution
+$$y_{ij}|\alpha_j, \beta_j, \phi_j \sim Poisson(V_i e^{f_j(x_i,s_i)})$$
+where $e^{f_j(x_i,s_i)})$ models the larval density in the water, $V_i$ is the sampled volume of water, and serves as an offset. We first assume the latent variable follows the linear model 
+$$f_j(x_i,s_i) =  x_i^T\beta_j + \phi_j(s_i)$$
+where $x_i\in\mathbb{R}^{13}$ contains the environmental covariates at location $s_i\in \mathbb{R}^2$, and has all 1 in the first column.
+Such models can be seen as an extention of Generalized liear models to (spatial) random effect. Given $\mathbb{E}(y_{i})=\mu_{i}$ $\forall i\in1,\dots, N$ observations, the model can be written as:
+$$g(\frac{\mu_i}{V_i}) =   x_i^T\beta_j + \phi_j(s_i)$$
+where $g(\cdot) = \log(\cdot)$ is the link function. 
+
+Note that, in our data, the first covariate is categorical with six different classes, the linear predictor function in the model can be expressed as
+$$m(x) = \alpha_0 + \alpha_1 \delta_1(x_1) + \dots + \alpha_5 \delta_5(x_1) +x_2\beta_1 + \dots + x_6\beta_5 $$
+where $\delta_d(x_1) = 1$ if $x_1=d \in 1,\dots ,5$ and zero otherwise (the intercept corresponds to class 0 ), we will denote the 13 dimensional vector $\beta_j$.
+For the linear coefficients we assume  uninformative priors $\beta_{jd}\sim N(0,10)\ \forall d\in 1,\dots,13$  . 
+The variable $\phi(s)$ models the spatial random effects that describes temporally constant associations, unexplained by the available covariates.
+
+We construct and analyse different Gaussian latent variable models (GLVM). These models are such that the process $f_j(x,s)$ conditional on hyperparameters, is assumed to be Gaussian random variable or Gaussian stochastic process.
+```{r}
+## Test with smaller data first
+n = nrow(whitefish.dat)-length(vol0)
+sm = 217 #smaller dataset
+x1 = x[seq(1,n,length=sm),]
+s1 = s[seq(1,n,length=sm),]
+y1 = y[seq(1,n,length=sm)]
+V1 = V[seq(1,n,length=sm)]
+```
+
+### GLM with no random effects
+We first implement a model where $\phi \sim N(0,\sigma^2_\phi)$, i.e. a model where there is no spatial correlation induced by the random effect:
+```{r}
+whitefishmodel_no_sre = "
+    data {
+      int<lower=1> N;
+      int<lower=1> Dx;
+      matrix[N,Dx] x;
+      int<lower=0> y[N];
+      vector[N] V;
+    }
+    parameters {
+      vector[Dx] b;
+      vector[N] phi;
+      real<lower =0> s2_phi;
+      real<lower =0> r;
+    }
+    transformed parameters {
+      vector[N] f;
+      for (n in 1:N)
+        f[n] =   dot_product(  x[n,], b) + phi[n]; //uncorrelated locations -> spatial random effect
+    }
+    model {
+      s2_phi ~ student_t(4, 0, 1);
+      r ~ gamma(4,0.1);
+      for (i in 1:Dx)
+        b[i] ~ normal(0, sqrt(10));
+      for (n in 1:N) {
+        phi[n] ~ normal(0,sqrt(s2_phi));
+        y[n] ~ neg_binomial_2(V[n]*exp(f[n]), r);
+      }
+    }
+    generated quantities{
+    vector[N] yp;
+    for (n in 1:N)
+      yp[n] = neg_binomial_2_rng(V[n]*exp(f[n]), r);
+    }
+  "
+  
+  
+whitefishmodel_no_sre1 = "
+    data {
+      int<lower=1> N;
+      int<lower=1> Dx;
+      matrix[N,Dx] x;
+      int<lower=0> y[N];
+      vector[N] V;
+    }
+    
+    parameters {
+      vector[Dx] b;
+      vector[N] phi;
+      real<lower =0> s2_phi;
+      real<lower =0> theta;
+      real<lower =0> omega;
+    }
+    transformed parameters {
+     vector[N] f;
+     vector<lower =0>[N] r;
+      
+      for (n in 1:N) {
+        f[n] =   dot_product(  x[n,], b) + phi[n]; //uncorrelated locations -> spatial random effect
+        r[n] = f[n]/(theta*f[n]+omega-1);
+      }
+    }
+    model {
+      s2_phi ~ student_t(4, 0, 1);
+      theta~gamma(2,1);
+      omega~gamma(2,1);
+      for (i in 1:Dx) 
+        b[i] ~ normal(0, sqrt(10));
+    
+      for (n in 1:N) {
+        phi[n] ~ normal(0,sqrt(s2_phi));
+        y[n] ~ neg_binomial_2(V[n]*exp(f[n]), r[n]);
+      }
+       
+      
+    }
+  "
+
+```
+
+
+Check the model
+```{r}
+whitefish_data <- list(Dx = ncol(x),
+                      N = nrow(x),
+                      x = x,
+                      y = y,
+                      V = V)
+
+# Compile the STAN model
+ #fit00 = stan(model_code =  whitefishmodel_no_sre, data = whitefish_data, warmup=1500,
+#            iter = 3000, chains = 3,  control = list(adapt_delta = 0.99) )
+#saveRDS(fit00, file = "fit_wf_nornd_noout.rds")
+fit00 <- readRDS("glm3000.rds")
+#fit00 <- readRDS("glmq3000.rds")   quadratic effect
+
+
+m00 = as.matrix(fit00)
+print(fit00, pars="b")            
+summary(fit00, pars = c( "b[1]","phi[1]","s2_phi", "f[1]","r") )            # summary
+stan_trace(fit00, pars =c( "r","s2_phi") )         # traceplot
+stan_ac(fit00,inc_warmup = FALSE, lags = 25, pars =c( "r","s2_phi") )   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit00, pars = c( "r","s2_phi"))  )
+
+
+```
+```{r}
+summary_beta=summary(fit00, pars="b")
+summary_beta=summary_beta$summary
+rownames(summary_beta)=c( "intercept",paste( "BOTTOMCLS", 0:5, sep="_"), colnames(whitefish.dat.cov)[-c(1,2,4,8)])
+round(summary_beta,3)
+
+```
+We have changes in assotiation direction between linear cofficients reiated to variables salinity, with respect to the covariance among the training data, that anyway was quite low in all cases.
+```{r}
+cor.y =c()
+for (i in 3:ncol(whitefish.dat.cov)) { 
+  if(i!=8 & i!=4)
+  cor.y[i-2]= round(cor(whitefish.dat.cov[,i], whitefish.dat$WHISUM),3)
+}
+cor.df=data.frame("training data cor"=na.omit(cor.y), "linear coef"=round(summary_beta[8:15,1],3))
+cor.df
+```
+
+
+```{r}
+  ## prediction
+  b = as.matrix(fit00, pars ="b")
+  phi = as.matrix(fit00, pars ="phi")
+  s2_phi = as.matrix(fit00, pars ="s2_phi")
+  ss= length(s2_phi) # sample size:800
+  ypred= as.matrix(fit00, pars="yp")
+  ytilde=round( colMeans(ypred))
+  plot(y,ytilde, main="obs vs pred abundance")
+  abline(0,1,col=2)
+  raster.plot(ytilde/V, c("White fish larvae density","(amount/m^3)"))
+  raster.plot(log(ytilde/V), c("White fish larvae density","(amount/m^3)"))
+  
+  #resdiual plots
+  resid0=y-ytilde
+  plot(y,(resid0-mean(resid0)/sd(resid0)), ylab="std reisd",main="Residual plots", pch=16, col=3)
+  hist(resid0)
+  #accuracy
+  ybool=ifelse(y==0,0,1)
+  ytildebool=as.vector(ifelse(ytilde==0,0,1))
+  (acc0=length(which(ybool==ytildebool))/length(y) ) #0.6
+```
+We have clear problems in predicting 0 occurences
+
+```{r}
+# matrix of posterior samples of f and y
+y.tilde = matrix(NA,nrow(xpred),ss) # matrix of posterior samples of y.tilde 180692x800
+f.tilde = matrix(NA,nrow(xpred),ss) # matrix  of posterior samples of f.tilde 180692x800
+mean_f=rep(NA, nrow(spred))
+var_f=rep(NA, nrow(spred))
+int_f = matrix(NA,nrow(spred),3)
+# posterior mean of f
+# posterior 95% interval of f.tilde
+for (i in 1:nrow(xpred)) {  #
+  f.tilde[i,] =xpred[i,]%*%t(b) + rnorm(ss, 0, sqrt(s2_phi))
+  #y.tilde[i,] = rpois(ss,V[i]*exp(f.tilde[i,]) ) 
+  mean_f[i]=(mean(f.tilde[i,]))
+  var_f[i]=(var(f.tilde[i,]))
+  int_f[i,] = quantile(f.tilde[i,],probs=c(0.025,0.5,0.975))
+}
+dens.tilde=exp(mean_f)
+```
+
+```{r}
+# prediction of larvae density f:
+
+raster.plot(mean_f, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(var_f, c("White fish larvae","variance of log density"))
+raster.plot(dens.tilde, c("White fish larvae density","(amount/m^3)"))
+
+q999.dens=quantile(exp(mean_f), 0.999)
+raster.plot(mean_f[exp(mean_f<q999.dens)], c("White fish larvae log density no outliers","(log(amount/m^3))"))
+raster.plot(exp(mean_f[exp(mean_f<q999.dens)]), c("White fish larvae log density no outliers","((amount/m^3))"))
+
+```
+
+Consider the predicted values for the training locations only and compare them with WHISUM training variable.
+```{r}
+# matrix of posterior samples of f and y
+y.tilde = matrix(NA,nrow(x1),ss) # matrix of posterior samples of y.tilde 180692x800
+f.tilde = matrix(NA,nrow(x1),ss) # matrix  of posterior samples of f.tilde 180692x800
+mean_f.tr=rep(NA, nrow(s1))
+var_f=rep(NA, nrow(s1))
+int_f = matrix(NA,nrow(s1),3)
+# posterior mean of f
+# posterior 95% interval of f.tilde
+for (i in 1:nrow(x1)) {  #
+  f.tilde[i,] =x1[i,]%*%t(b) + rnorm(ss, 0, sqrt(s2_phi))
+  #y.tilde[i,] = rpois(ss,V[i]*exp(f.tilde[i,]) ) 
+  mean_f.tr[i]=(mean(f.tilde[i,]))
+  var_f[i]=(var(f.tilde[i,]))
+  int_f[i,] = quantile(f.tilde[i,],probs=c(0.025,0.5,0.975))
+}
+dens.tilde.tr=exp(mean_f.tr)
+plot(y/V,dens.tilde.tr)
+abline(0,1,col=2)
+```
+The model fails to predict very high abundance values.
+
+Vendace
+```{r}
+vendace_data <- list(Dx = ncol(x),
+                      N = nrow(x),
+                      x = x,
+                      y = y.v,
+                      V = V)
+
+# Compile the STAN model
+ fit000 = stan(model_code =  whitefishmodel_no_sre, data = vendace_data, warmup=1200,
+            iter = 3000, chains = 3,  control = list(adapt_delta = 0.99) )
+saveRDS(fit000, file = "fit_ve_nornd_noout.rds")
+
+m000 = as.matrix(fit000)
+print(fit000, pars="b")            
+summary(fit000, pars = c( "b[1]","phi[1]","s2_phi", "f[1]","r") )            # summary
+stan_trace(fit000, pars =c( "r","s2_phi") )         # traceplot
+stan_ac(fit000,inc_warmup = FALSE, lags = 25, pars =c( "r","s2_phi") )   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit000, pars = c( "r","s2_phi"))  )
+```
+
+
+### SDM with random effects and poisson target
+Now we implement a linear mixed model (or linear random effects model). We model  $\phi$ by using a zero mean Gaussian Process
+$$\phi_j(s)|\sigma^2_\phi, l \sim N(0, \Sigma_\phi) $$
+This is a GLVM since each additive component is Gaussian, which implies that the marginal distribution for any $f = [f (s_1 ),\dots, f (s_n )]$ is again Gaussian:
+$$f |S, X(S) \sim N(0, X(S)\Sigma_\beta X(S)^T+\Sigma_\phi)$$
+
+where $X(S)^T = [x(s_1 ),\dots , x(s_n )]$, $\Sigma_\phi = Cov(\phi,\phi)$ and $\phi = [\phi(s_1 ),\dots , \phi(s_n )]^T$.  
+In our case $\Sigma_\beta = \sigma^2_\beta \bf I$ .
+Denoted by $\Sigma_\beta(s,s') =  x(s)\Sigma_\beta x(s')^T$, we have that
+$$f|S,X \sim GP(0, \Sigma_\beta(s,s') + \Sigma_\phi(s,s'))$$
+or equivalently 
+$$f \sim GP(x(s)^T\beta, \Sigma_\phi(s,s'))$$
+The covariance matrix of the random effect $\phi$ is such that each element follows a squared exponential covariance function
+$$\Sigma_\phi(s_i,s_h) =\sigma_\phi^2 \exp\Big( -\sum_{k=1}^2 \frac{|s_{i,k}-s_{h,k}|^2}{l_k^2} \ \Big)$$
+where we assume the covariance parameters priors:
+$$\sigma^2_\phi\sim Student-t_{\nu=4}(\mu=0,\sigma=1)$$
+
+$$ 1/l \sim Student-t_{\nu=4}(\mu=0, \sigma=1)$$
+We set an uninformative prior for the variance parameter $\sigma$, while, for the length-scale, $l$, which governs how fast the correlation decreases
+as a function of distance, we select a half-Student-t prior with scale parameter $\sigma_l= 32$ so that it gives
+90\% prior probability correlation ranges below 50km, where the correlation range, measured by $l$, indicates the distance at which the covariance function has dropped to 5 \% of its maximum. We set such value as we want to prefer solutions where the spatial correlation in the
+spatial random effect shrinks to about zero between different
+sampling sites, that we assume being at least 50km far apart.   
+
+Note that, for computational reasons, we define the model so that we sample from the posterior of $z = L^{-1} f$ , where $L$ is a matrix that approximates a square root of the posterior covariance of $f$.
+```{r}
+GP_whitefishmodel = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+    Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //   Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that accounts for cor. among locations with more than 50km dist
+    //l ~ gamma(7,0.1);
+      inv(l) ~ student_t(4, 0, 1);
+      target += -2*log(l);   // The Jacobian part for the 1/l ~ Student_t
+
+  
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:N)
+      y[n] ~ poisson(V[n]*exp(ff[n]));
+    
+  }
+  generated quantities {
+    vector[N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+``` 
+
+Check the model
+```{r, "stanmodel data"}
+whitefish_dat <- list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = x,
+                      s = s,
+                      y = y,
+                      V = V)
+whitefish_dat_small <- list(Dx = ncol(x1),
+                      N = nrow(x1),
+                      Ds = ncol(s1),
+                      x = x1,
+                      s = s1,
+                      y = y1,
+                      V = V1)
+```
+
+```{r}
+# Compile the STAN model
+# fit0 = stan(model_code =  GP_whitefishmodel, data = whitefish_dat, warmup=150,
+#             init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2=1)),
+#             iter = 500, chains = 1 , control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l")  )
+#saveRDS(fit0, file = "fit_wf_exp_gamma1.rds")
+fit0 <- readRDS("fit_wf_exp_gamma1.rds")
+  
+m0 = as.matrix(fit0)
+#print(fit0)              # Rhat 
+summary(fit0, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit0 , pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit0,inc_warmup = FALSE, lags = 25 , pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit0, pars = c("s2_matern", "l", "f[1]")))   # posterior density
+# scatter plot of parameters of spatial random effect
+stan_scat(fit0, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+
+
+
+
+Now, instead of an exponential covariance function we chose the Matern covariance function with parameter $\nu=\frac{3}{2}$ for $\phi_j$. This gives
+$$k_{mater}(s_i,s_h) = \sigma^2(1+\sqrt{3} r(s_i,s_h)) e^{-\sqrt{3} r(s_i,s_h)}$$
+where $\sigma^2=10$ and 
+$$r(s_i,s_h) = \sqrt{\sum_{k=1}^2\frac{(s_{k,i}-s_{k,h})^2}{l_k^2}}$$
+This is equivalent to model directly the latent variable with a Gaussian Processes, so that 
+$$f_j(s,x)  \sim GP(m(x), k_{matern}(s,s'|l, \sigma^2))$$
+The covariance parameters priors are as above.
+
+
+```{r}
+# fit = stan(model_code =  GP_whitefishmodel3, data = whitefish_dat, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l")  )
+#saveRDS(fit, file = "fit_wf_mater3_gamma.rds")
+fit <- readRDS("fit_wf_mater3_gamma.rds")
+
+
+m = as.matrix(fit)
+#print(fit)              # Rhat
+summary(fit, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+In both models we have a really high autocorrelation. The exponential covariance model has clear problems with convergence, in the Matern covariance model we still have some convergence problems for a few parameters estimating the latent function $f_i$. We select the latter to do our predictions on the whole Gulf of Bothnia.
+
+### Posteror distributions and MCMC
+Given the hierarchical model described previously, our inferential objective is the
+posterior distributions of the hyperparameters and the latent function, as well as the predictive
+distribution for new observations. These posterior probability distributions cannot be solved
+analytically in general.
+
+Markov chain Monte Carlo (MCMC) is a technique (or morecorrectly, a family of techniques) for sampling probability distributions. Typical applications are in Bayesian modelling, the target distributions being posterior distributions of unknownparameters, or predictive distributions for unobserved phenomena.
+In order to estimate the posterior density of the parameters Stan uses a tailored Hamiltonian Monte Carlo (Duane et al., 1987; Neal, 1996, 2011)
+where the tuning of the sampling parameters is done in automated manner (Hoffman and
+Gelman, 2014). Hamiltonian Monte Carlo utilizes the gradient information of the log posterior distribution to direct the sampling to interesting regions and, hence, to speed up the convergence and improve mixing. When using this method understanding how to tune the
+sampling parameters can be challenging. 
+Even though MCMC methods are theoretically appealing and the Monte Carlo estimate is
+proved to converge to the correct distribution, they are often hard to implement
+in practice. Moreover, after the
+convergence the sample chain might mix poorly which results in high autocorrelation and low
+number of efficient samples. 
+In order to reduce autocorrelation in our model sample, we thin the chains, that is, we discard all but every k-th observation. 
+
+### Predictions
+The posterior predictive density of latent variables, conditional on hyperparameters, is
+$$\tilde{f} |S, X(S), y, \tilde{S}, \tilde{X}( \tilde{S}), \theta \sim N(K_{\tilde{f},f }(K_{f,\tilde{f}} +\sigma^2 I)^{-1} y, K_{f,\tilde{f}} - K_{f,\tilde{f}}  (K_{f,\tilde{f}} f +\sigma^2 I)^{-1} K_{f,\tilde{f}}  )$$
+
+where $$K_{f,\tilde{f}} = \tilde{X}(\tilde{S} )\Sigma_\beta X(S) +  K_{\phi,\tilde{\phi}}$$ 
+$$K_{\tilde{f},\tilde{f}}=\tilde{X}(\tilde{S} )\Sigma_\beta=\tilde{X}(\tilde{S}  +  K_{\phi,\tilde{\phi}}$$ and $$K_{f,f} = X(S)\Sigma_\beta X(S) +  K_{\phi,\phi}.$$  
+
+The posterior distribution for linear weights, conditional on the known error covariance is then
+$$\beta| y, X, \sigma^2 , \Sigma_\phi \sim N (\mu_p, \Sigma_p)$$
+
+where in the case of dependent errors,
+$$\mu_p = \Sigma_\beta X^T (X \Sigma_\beta X^T + \sigma^2I)^{-1}y$$
+$$\Sigma_p = \Sigma_\beta - \Sigma_\beta X^T (X \Sigma_\beta X^T +  \sigma^2I)^{-1} X \Sigma_\beta$$
+
+We calculate the posterior distribution for the linear predictor parameters: $\beta_j$ and report the posterior mean and 95% credible interval for each of them, in order to evaluate the effect of each environmental variable on white fish larvae density.
+We calculate the posterior predictive mean and variance of the log density: $f(x,s)$ as well as the posterior median of the density of larvae throughout the study region, using the prediction raster dataset predrasterwhitefish.txt .
+
+Note:
+    We can simulate from a Gaussian process with mean function $\mu(s)$ and covariance function $k(s, s _0 )$ at locations $S = [s_ 1 , \dots, s_ n ]^ T$ as
+    follows. Construt a vector $\mu = [\mu(s_1 ), \dots, \mu(s_n )]^T$ and a covariance matrix $[K_{f,f} ]_{ii,j} = k(s_ i , s_ j )$.
+    Form a Cholesky decomposition of the covariance matrix $LL^ T$ . Form an $n \times 1$ vector of i.i.d.
+    zero mean and unit variance Gaussian random variables, $z \sim N (0, I)$. After this form a vector $f = \mu + Lz$. The vector $f$ is then a sample from the Gaussian process at locations $S$.
+
+```{r}
+prediction= function(m, Covariance, x, xpred , s, spred, thin=8) {
+  m_thinned = as.matrix(m[seq(1,nrow(m),thin),])
+
+  EfMCMC = matrix(nrow=nrow(xpred),ncol=nrow(m_thinned)) # E(f) in each location, for each MCMC iter(thinned)
+  sampf_linMCMC = matrix(nrow=ncol(x),ncol=nrow(m_thinned)) # sample f: to get beta estimation for each covariate , in each iter(thinned)
+  VarfMCMC = matrix(nrow=nrow(xpred),ncol=nrow(m_thinned)) # Var(f) in each location, for each MCMC iter(thinned)
+  
+  for (i1 in 1:nrow(m_thinned)){
+    l = as.double(m_thinned[i1,"l"])
+    sigma2 = as.double(m_thinned[i1,"s2_matern"])
+    s2_lin = as.vector(rep(10,ncol(x)))   # Linear covariance function
+    
+    y = m_thinned[i1,3:(nrow(x)+2)]
+  
+      Kt = Covariance(s,s,l,sigma2, 1) + linearCovariance(x,x,s2_lin) + diag(rep(1e-6,nrow(x))) #add jiitter 
+    Kpt = Covariance(spred, s, l,sigma2,0)
+    Kpt_lin = linearCovariance(xpred,x,s2_lin) # xpred * diag(sigma2) * x^T
+    Kpt_all = Kpt + Kpt_lin 
+    
+    # Find the Cholesky Decomposition of the covariance matrix
+    L = t( chol(Kt) ) 
+    a = solve(t(L),solve(L,y)) #a =(L.t*L)-1 y   (z)
+    
+    # Plot the different components
+    
+    #  --------------- The full f(t) -------------
+    # The posterior predictive mean
+    EfMCMC[,i1] = Kpt_all%*%a
+    LKtp = solve(L,t(Kpt_all))
+    VarfMCMC[,i1] = matrix(sigma2 + xpred^2%*%s2_lin,nrow(Kpt_all),1) - as.matrix( colSums( LKtp*LKtp ) )
+    
+    # The posterior of the linear weights
+    xpred22 = diag(ncol(x))
+    Kpt_lin2 = linearCovariance(xpred22,x,s2_lin) # diag(s2)*X^T
+    
+    Ef_linMCMC = Kpt_lin2%*%a # mean f tilde
+    LKtp = solve(L,t(Kpt_lin2))
+    Covf =  xpred22%*%diag(s2_lin) - as.matrix(  t(LKtp)%*%LKtp ) # + diag(rep(1e-6,nrow(xpred22)))# cov f tilde
+    sampf_linMCMC[,i1] = Ef_linMCMC + chol(Covf)%*%rnorm(nrow(Covf)) # sample beta coeff E(ftilde) +Lz
+    #Varf_linMCMC[,i1] = matrix(xpred22^2%*%s2_lin,nrow(Kpt_lin),1) - as.matrix( colSums( LKtp*LKtp ) )
+  }
+  
+  # linear coefficients(weights): beta estimates
+  # Posterior mean and standard deviation of fixed effects
+    mean=rowMeans(sampf_linMCMC)
+   sd=rowSds(sampf_linMCMC)
+  # 95% quantiles for fixed effects
+  q=apply(sampf_linMCMC, 1, quantile, probs = c(0.025, 0.975))
+  
+  summary_beta=data.frame(mean,sd,t(q))
+  colnames(summary_beta)=c("Mean", "Stand_Dev", "quant2.5%", "quant97.5%")
+  if(ncol(x)==15) rownames(summary_beta)=c( "intercept",paste( "BOTTOMCLS", 0:5, sep="_"), colnames(whitefish.dat.cov)[-c(1,2,4,8)])
+  else rownames(summary_beta)=c("intercept", paste( "BOTTOMCLS", 0:5, sep="_"), colnames(whitefish.dat.cov)[-c(1,2,4,8)], paste(colnames(whitefish.dat.cov)[-c(1,2,4,8)],"^2", sep=""))
+  
+  # larvae density f: mean and variance per each location
+  Ef = rowMeans(EfMCMC)
+  Varf = rowMeans(VarfMCMC) + rowSds(EfMCMC)^2
+return( list("summary_beta"=round(summary_beta,3), "Ef"=Ef, "Varf"=Varf, "betas"=sampf_linMCMC, "EfMC"=EfMCMC, "Kpt"=Kpt, "Kpt_lin"=Kpt_lin))
+}
+```
+
+
+With exp.covariance:
+  
+```{r}
+#p= prediction(m0, expCovariance, x, xpred , s, spred)
+#saveRDS(p, file="pred_exp.RData")
+p=readRDS("pred_exp.RData")
+
+# linear coefficients(weights): beta estimates
+p$summary_beta
+#cbind(p$summary_beta[8:15,1:2],cor.df$training.data.cor)
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p$Ef), 0.999)
+raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+with Matern covariance:
+```{r}
+# p1= prediction(m, Matern32Covariance, x, xpred , s, spred)
+# saveRDS(p1, file="pred_mater.RData")
+p1=readRDS("pred_mater.RData")
+
+# linear coefficients(weights): beta estimates
+p1$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p1$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p1$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p1$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p1$Ef), 0.999)
+raster.plot(p1$Ef[exp(p1$Ef)<q999.dens], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+
+
+### iid Random effects
+To account for over dispersion we model Y with a negative binomial distribution. 
+$$y _i|\beta, \phi_i, \epsilon_i \sim Negative-Binomial(V_i e^ {f(x_i, s_i)}, r)$$
+That is equivalent to assume 
+$$y _i|\beta, \phi_i, \epsilon_i \sim Poisson(\epsilon_i V_i e^ {f(x_i, s_i)})$$
+
+where $\epsilon_i\sim Gamma(r,r)$ are independent random effects. For the dispersion parameter r, we assume as prior $r\sim Gamma(2,1)$.
+
+```{r}
+GP_whitefishmodel_ire = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+    real<lower=0> r;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+    inv(l) ~ student_t(4, 0, 1);
+    target += -2*log(l);   // The Jacobian part for the 1/l ~ Student_t
+  
+// A weakly informative prior for r
+    r ~ gamma(2, 0.1 );
+    
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:N) {
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    }
+      
+    
+  }
+  generated quantities {
+    vector[N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+``` 
+
+with exp covariance and iid random effects:
+```{r}
+# fit1 = stan(model_code =  GP_whitefishmodel_ire, data = whitefish_dat, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l","r")  )
+# saveRDS(fit1, file = "fit_wf_ire_exp_gamma1.rds")
+fit1 <- readRDS("fit_wf_ire_exp_gamma1.rds")
+
+
+m1 = as.matrix(fit1)
+#print(fit1)              # Rhat
+summary(fit1, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit1, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit1,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit1, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit1, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+
+
+with Matern covariance and iid random effects:
+```{r}
+# fit2 = stan(model_code =  GP_whitefishmodel_ire, data = whitefish_dat, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "r")  )
+# saveRDS(fit2, file = "fit_wf_ire_matern.rds")
+fit2 <- readRDS("fit_wf_ire_matern_gamma.rds")
+
+
+m2 = as.matrix(fit2)
+#print(fit2)              # Rhat
+summary(fit2, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit2, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit2,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit2, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit2, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+
+Adding iid random effects to the model reduces autocorrelation and increases convergence of our posterior parametres. Nevertheless the overdispersion seems not solved yet, as $l$ estimation is still around 100-200 m, hece it is lower than the data resolution.
+
+Let's see how predictions change.
+With exp.covariance:
+
+```{r}
+#p3= prediction(m1, expCovariance, x, xpred , s, spred)
+#saveRDS(p3, file="pred_exp_ire.RData")
+p3=readRDS("pred_exp_ire.RData")
+
+# linear coefficients(weights): beta estimates
+p3$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p3$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p3$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p3$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p3$Ef), 0.999)
+raster.plot(p3$Ef[exp(p3$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+ 
+Check the predictions for training locations only: in mean, the estimates for logdensity of larvae fails to predict bigger density. There is still an outlier density in the training data, but the predictions seem not to work that well for smaller log densities either.
+```{r}
+p3.tr= prediction(m1, expCovariance, x1, x1 , s1, s1)
+plot(log(y1/V1),(p3.tr$Ef), main="Predictions vs training data")
+plot(log(y1/V1),(p3.tr$Ef), ylim=c(-3,5), main="Predictions vs training data")
+abline(0,1, col=2)
+
+```
+ 
+with Matern covariance:
+```{r}
+#p4= prediction(m2, Matern32Covariance, x, xpred , s, spred)
+#saveRDS(p4, file="pred_mater_ire.RData")
+p4=readRDS("pred_mater_ire.RData")
+
+# linear coefficients(weights): beta estimates
+p4$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p4$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p4$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p4$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p4$Ef), 0.999)
+raster.plot(p4$Ef[exp(p4$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+### Predictions inside stan
+Implement predictions in stan model, with a smaller dataset
+```{r}
+GP_whitefishmodel_pred = "
+  data {
+    int<lower=1> N;   // training data
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+    int<lower=1> Np;  // test data
+    matrix[Np,Dx] xp;
+    matrix[Np,Ds] sp;
+//    int<lower=0> yp[Np];
+//    vector[Np] Vp;
+  }
+  transformed data {  
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    vector[Np] mup;
+    matrix[Np, Np] Dist_spatialp;
+    matrix[Np, Np] Sigma_linp;
+    real s2_lin;
+    s2_lin = 10;
+    
+    for (i in 1:N)
+      mu[i] = 0;
+    for (i in 1:Np)
+      mup[i] = 0;
+    
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+    
+        // off-diagonal elements
+    for (i in 1:(Np-1)) {
+      for (j in (i+1):Np) {
+        Dist_spatialp[i, j] = pow(dot_self(sp[i] - sp[j]),0.5)  ;    
+        Sigma_linp[i, j] = s2_lin * dot_product(xp[i],xp[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatialp[j, i] = Dist_spatialp[i, j];
+        Sigma_linp[j, i] = Sigma_linp[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:Np){
+      Dist_spatialp[k, k] = 0;
+      Sigma_linp[k, k] = s2_lin * dot_product(xp[k],xp[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+      vector[Np] zp;
+    real<lower=0> r;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    matrix[Np, Np] Sigmap;
+    matrix[Np, Np] Lp;
+    real<lower=0> inv_l;
+   
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+  Sigmap = s2_matern*exp(-inv_l*Dist_spatialp ) + Sigma_linp; // Exponential   
+
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+    Lp = cholesky_decompose(Sigmap);
+  }
+  model {
+    vector[N] ff;
+    vector[Np] ffp;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+    l ~ gamma(7, 0.1);
+  
+// A weakly informative prior for 
+    r ~ gamma(2, 0.1 );
+    
+    z ~ normal(0, 1);
+    zp ~ normal(0, 1);
+    ff = L*z;
+    ffp = Lp*zp;
+  
+    for (n in 1:N) {
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    }
+
+  }
+  generated quantities {
+    vector[N] f;
+    vector[Np] fp;
+    //vector[Np] Lik;
+    
+    // derived quantity (transform)
+    f = L*z;
+    fp = Lp*zp;
+    //for(i in 1:Np) Lik[i] = neg_binomial_2_lpmf(yp[i] |Vp[i]*exp(fp[i]),r); 
+
+  }"
+
+
+#stanStruct = stan_model(model_code = GP_whitefishmodel_cv)
+``` 
+
+```{r}
+set.seed(123)
+ind2=sample(1:nrow(x),size = 200, replace = F) #training data
+ind1=which(y != y[ind2]) # test data
+
+  dataset = list(Dx = ncol(x), Ds = ncol(s),
+                        N = length(ind2),
+                        x = x[ind2,],
+                        s = s[ind2,],
+                        y = y[ind2],
+                        V = V[ind2],
+  	                    Np = length(ind1),
+                        xp = x[ind1,],
+                        sp = s[ind1,])
+  
+  	# posterior samples
+fitp = stan(model_code =  GP_whitefishmodel_pred, data = dataset, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "fp", "s2_matern", "l","r")  )
+# saveRDS(fit1, file = "fit_wf_ire_exp_gamma1.rds")
+#fit1 <- readRDS("fit_wf_ire_exp_gamma1.rds")
+
+
+mp = as.matrix(fitp)
+#print(fit1)              # Rhat
+summary(fitp, pars = c("s2_matern", "l", "f[1]", "r"))            # summary
+stan_trace(fitp, pars = c("s2_matern", "l", "f[1]", "r"))         # traceplot
+stan_ac(fitp,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fitp, pars = c("s2_matern", "l", "f[1]", "r")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fitp, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+```{r}
+f=as.matrix(fitp, pars="fp")
+Ef.pr=apply(f,2, "mean")
+Varf.pr=apply(f,2, "var")
+
+raster.plot(Ef.pr, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(Varf.pr, c("White fish larvae","variance of log density"))
+raster.plot(exp(Ef.pr), c("White fish larvae density","((amount/m^3))"))
+```
+Compare predictions with measured data
+```{r}
+# test data target
+y.logdens= log(y[ind1]/V[ind1])
+y.logdens[!is.finite(y.logdens)]=0
+
+
+# predictions for training data with stan output
+plot(y.logdens,(Ef.pr), xlab="measured log(y/V)", ylab="pred log(y/V)", ylim=c(-3,6), main="Predictions vs training larvae log density, Stan")
+abline(0,1, col=2)
+
+qqplot(Ef.pr, y.logdens)
+par(mfrow=c(1,2))
+hist(y[ind1]/V[ind1], 50,main="Observed density")
+hist(exp(Ef.pr), main="Predicted density")
+
+
+```
+
+
+Residul plots with predictions from stan output
+```{r}
+### Stan pred
+par(mfrow=c(3,3))
+
+for (i  in 8:15 ) {
+  plot(x[ind1,i], Ef.pr, xlab=rownames(p$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-Ef.pr
+for (i  in 8:15 ) {
+  plot(x[ind1,i], resid, xlab=rownames(p.tr$summary_beta)[i], main="Residual plot", pch=18, col="light green")
+  abline(h=mean(resid), col="dark green")
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x[ind1,i], resid.std, xlab=rownames(p.tr$summary_beta)[i], main="Std Residual plot", pch=18, col="light green")
+     abline(h=mean(resid.std), col="dark green")
+     #points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+raster.plot(resid, "residuals Stan")
+```
+Plots of prdictions vs covariates suggest positive correlation with larvae density and variables such as temperature, salinity, FE300.
+Residual plots are not complitely random, probably the use of quadratic effect may improve the model.
+
+Predition on the bigger raster file
+```{r}
+#subset of the predraster file, to use for predictions
+npred = 1000 #crashing with bigger dataset..
+
+dataset = list(Dx = ncol(x), Ds = ncol(s),
+                        N = length(ind2),
+                        x = x[ind2,],
+                        s = s[ind2,],
+                        y = y[ind2],
+                        V = V[ind2],
+  	                    Np = npred,
+                        xp = xpred[seq(1,nrow(xpred), length.out =  npred),],
+                        sp = spred[seq(1,nrow(xpred), length.out = npred),])
+  
+  	# posterior samples
+fitpred = stan(model_code =  GP_whitefishmodel_pred, data = dataset, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "fp", "s2_matern", "l","r")  )
+
+
+mpred = as.matrix(fitpred)
+#print(fit1)              # Rhat
+summary(fitpred, pars = c("s2_matern", "l", "f[1]", "r"))            # summary
+stan_trace(fitpred, pars = c("s2_matern", "l", "f[1]", "r"))         # traceplot
+stan_ac(fitpred,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fitpred, pars = c("s2_matern", "l", "f[1]", "r")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fitpred, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+
+```{r}
+f=as.matrix(fitpred, pars="fp")
+Ef.pred=apply(f,2, "mean")
+Varf.pred=apply(f,2, "var")
+
+raster.plot(Ef.pred, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(Varf.pred, c("White fish larvae","variance of log density"))
+raster.plot(exp(Ef.pred), c("White fish larvae density","((amount/m^3))"))
+```
+
+
+
+Letś compare our results with the predict function..
+```{r}
+p= prediction(mp, expCovariance, x[ind2,], x[ind1,], s[ind2,], s[ind1,])
+#saveRDS(p, file="pred_mater_v.RData")
+#p=readRDS("pred_mater_v.RData")
+
+# linear coefficients(weights): beta estimates
+p$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p$Ef), 0.9999)
+raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+Quite differents..
+```{r}
+# predictions for training data with pred function
+plot(y.logdens,(p$Ef), xlab="train log(y/V)", ylab="pred log(y/V)", main="Predictions vs training larvae log density")
+abline(0,1, col=2)
+plot(y[ind1]/V[ind1],exp(p$Ef), xlab="train log(y/V)", ylab="pred log(y/V)", main="Predictions vs training larvae log density")
+abline(0,1, col=2)
+
+plot(Ef.pr,(p$Ef), xlab="pred stan log(y/V)", ylab="pred log(y/V)", main="Predictions Stan vs predictions fun larvae log density")
+abline(0,1, col=2)
+
+```
+
+Residul plots with prediction from our function
+```{r}
+### prediction function
+par(mfrow=c(3,3))
+
+p.outlier=which.max(p$Ef)
+for (i  in 8:15 ) {
+  plot(x[ind1,i], p$Ef, xlab=rownames(p$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+  points(x[p.outlier,i], p$Ef[p.outlier], col=2, pch=18, cex=1.3)
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-p$Ef
+for (i  in 8:15 ) {
+  plot(x[ind1,i], resid, xlab=rownames(p$summary_beta)[i], main="Residual plot", pch=18, col="light green", ylim=c(-10,10))
+  abline(h=mean(resid), col="dark green")
+  
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x[ind1,i], resid.std, xlab=rownames(p$summary_beta)[i], main="Std Residual plot", pch=18, col="light green", ylim=c(-5,5))
+     abline(h=mean(resid.std), col="dark green")
+     #points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+
+raster.plot(resid, "residuals pred fun")
+par(mfrow=c(1,2))
+hist(resid)
+boxplot(resid)
+```
+Residual plots look quite random, still as we can see from the histogram and the boxplot, residuals are quite big .
+
+Using this function we get the predictions on the bigger raster set
+```{r}
+pp.test= prediction(mp, expCovariance, x[ind2,], xpred, s[ind2,], spred )
+
+raster.plot(pp$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(pp$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(pp$Ef), c("White fish larvae density","((amount/m^3))"))
+
+```
+
+
+### Vendace SDM
+We now implement a HSDM for vendace abboundance, in the same way we implemented the last whitefish model in the previous section, with exponential covariance
+```{r}
+y.ven = whitefish.dat$VENSUM[-vol0]
+
+# n = nrow(whitefish.dat)
+# m = 217 #smaller dataset
+# y.ven = y.ven[seq(1,n,length=m)]
+# x = x[seq(1,n,length=m),]
+# s = s[seq(1,n,length=m),]
+# V = V[seq(1,n,length=m)]
+
+
+ven_data <-  list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = x,
+                      s = s,
+                      y = y.ven,
+                      V = V)
+# fit.v = stan(model_code =  GP_whitefishmodel_ire, data = ven_data, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l")  )
+#saveRDS(fit.v, file = "fit_v_ire_exp_gamma.rds")
+fit.v <- readRDS("fit_v_ire_exp_gamma.rds")
+m = as.matrix(fit.v)
+
+
+#print(fit.v)              # Rhat
+summary(fit.v, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit.v, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit.v,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.v, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.v, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+The model works fine, the autocorrelation is less problematic.
+
+With matern covariance
+```{r}
+# fit.v = stan(model_code =  GP_whitefishmodel_ire, data = ven_data, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l")  )
+#saveRDS(fit.v, file = "fit_v_ire_matern_gamma.rds")
+fit.v2 <- readRDS("fit_v_ire_matern_gamma.rds")
+m2 = as.matrix(fit.v2)
+
+
+#print(fit.v)              # Rhat
+summary(fit.v2, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit.v2, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit.v2,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.v2, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.v2, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+
+
+We do spatial prediction with exp.covariance:
+
+```{r}
+#p= prediction(m, expCovariance, x, xpred , s, spred)
+#saveRDS(p, file="pred_exp_v.RData")
+p=readRDS("pred_exp_v.RData")
+
+# linear coefficients(weights): beta estimates
+p$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p$Ef), 0.999)
+raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+
+```
+And with matern covariance
+```{r}
+#p= prediction(m2, Matern32Covariance, x, xpred , s, spred)
+#saveRDS(p, file="pred_mater_v.RData")
+p=readRDS("pred_mater_v.RData")
+
+# linear coefficients(weights): beta estimates
+p$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p$Ef), 0.999)
+raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+\newpage
+
+### Presence absence SDM
+A starting point for implementing the hurdle model, is modeling presence-absence of the larvae. We can assume
+$$y_i|\beta, \phi\sim Bernoulli(\theta(s_i, x_i))$$
+where $\theta$ is the probavility that the larvae occur. We model the latent variable $f(x_i,s_i)=logit(\theta(s_i,x_i))$ with a linear model and a Gaussian random effect
+$$f(x_i,s_i) =  x_i(s)^\top\beta + \phi(s_i)$$
+
+```{r}
+GP_whitefishmodel_occur = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0, upper=50> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+    Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //   Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that accounts for cor. among locations with more than 50km dist
+    //l ~ gamma(7,0.1);
+      inv(l) ~ student_t(4, 0, 1);
+      target += -2*log(l);   // The Jacobian part for the 1/l ~ Student_t
+
+  
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:N)
+      y[n] ~ bernoulli(inv_logit(ff[n]));
+    
+  }
+  generated quantities {
+    vector[N] f;
+    vector[N] theta;
+    // derived quantity (transform)
+    f = L*z;
+    theta = inv_logit(f);
+  }"
+``` 
+
+
+```{r}
+y.occ=ifelse(y==0,0,1)   #whitefish.dat$WHIBIN[-vol0]
+occur_data <-  list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = x,
+                      s = s,
+                      y = y.occ)
+
+set.seed(123)
+randorow=sample(1:nrow(x),size = 200, replace = F) 
+occur_data_small <-  list(Dx = ncol(x),
+                      N = nrow(x[randorow,]),
+                      Ds = ncol(s),
+                      x = x[randorow,],
+                      s = s[randorow,],
+                      y = y.occ[randorow])
+
+fit.oc = stan(model_code =  GP_whitefishmodel_occur , data = occur_data_small, warmup=200, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "theta")  )
+# saveRDS(fit.oc, file = "fit_occ1000_2chain.rds")
+#fit.w.q = readRDS("fit_w2.rds")
+
+m.oc = as.matrix(fit.oc)
+#print(fit.w.q)              # Rhat
+summary(fit.oc, pars = c("s2_matern", "l", "f[1]", "theta[1]"))            # summary
+stan_trace(fit.oc, pars = c("s2_matern", "l", "f[1]", "theta[1]"))         # traceplot
+stan_ac(fit.oc,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]", "theta[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.oc, pars = c("s2_matern", "l", "f[1]", "theta[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.oc, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+Compare $\theta$ with the true values
+```{r}
+theta=as.matrix(fit.oc, "theta")
+Etheta=apply(theta,2,"mean")
+
+ypred=ifelse(Etheta>0.5,1,0)
+accu=length(which(y.occ[randorow]==ypred))/length(randorow) #0.78 #0.96   #0.982866 all data
+```
+prediction on the testset (remaining trainingset)
+```{r}
+pocc.test= prediction(m.oc, expCovariance, x[randorow,], x[-randorow,], s[randorow,], s[-randorow,])
+
+pocc.test$summary_beta
+raster.plot(pocc.test$Ef, c("White fish larvae presence log ODDS","(log(amount/m^3))"))
+#points(spred[which(pocc$Ef>20),])
+raster.plot(pocc.test$Varf, c("White fish larvae presence","variance of log ODDS"))
+Etheta=1/(1+exp(-pocc.test$Ef))
+raster.plot(Etheta, c("White fish larvae presence probability","((amount/m^3))"), col=rainbow(6, start = 0.4))
+hist(Etheta)
+ypred=ifelse(Etheta>0.5,1,0)
+accu=length(which(y.occ[-randorow]==ypred))/(length(y)-length(randorow)) #0.466
+```
+
+
+predictions on pred raster set
+```{r}
+pocc= prediction(m.oc, expCovariance, x, xpred , s, spred)
+
+pocc$summary_beta
+raster.plot(pocc$Ef, c("White fish larvae presence log ODDS"))
+points(spred[which(pocc$Ef>20),])
+raster.plot(pocc$Varf, c("White fish larvae presence","variance of log ODDS"))
+raster.plot(1/(1+exp(-pocc$Ef)), c("White fish larvae presence probability"))  # color=rev(rainbow(10, end = 0.7)) jarno paper color
+#q999.dens=quantile(exp(pocc$Ef), 0.999)
+#raster.plot(pocc$Ef[exp(pocc$Ef<q999.dens)], c("White fish larvae presence log ODDS, no outliers","(log(amount/m^3))"))
+```
+
+see how results change if we consider cases with only 1 larva as absence
+```{r}
+y.occ1=ifelse(y<=1,0,1) 
+occur_data <-  list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = x,
+                      s = s,
+                      y = y.occ1)
+
+set.seed(123)
+randorow=sample(1:nrow(x),size = 200, replace = F) 
+occur_data_small <-  list(Dx = ncol(x),
+                      N = nrow(x[randorow,]),
+                      Ds = ncol(s),
+                      x = x[randorow,],
+                      s = s[randorow,],
+                      y = y.occ1[randorow])  #18 more obs set equal to 0
+
+fit.oc1 = stan(model_code =  GP_whitefishmodel_occur , data = occur_data_small, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "theta")  )
+# saveRDS(fit.w.q, file = "fit_w2.rds")
+#fit.w.q = readRDS("fit_w2.rds")
+
+m.oc1 = as.matrix(fit.oc)
+#print(fit.w.q)              # Rhat
+summary(fit.oc1, pars = c("s2_matern", "l", "f[1]", "theta[1]"))            # summary
+stan_trace(fit.oc1, pars = c("s2_matern", "l", "f[1]", "theta[1]"))         # traceplot
+stan_ac(fit.oc1,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]", "theta[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.oc1, pars = c("s2_matern", "l", "f[1]", "theta[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.oc1, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+Compare $\theta$ with the true values
+```{r}
+theta=as.matrix(fit.oc1, "theta")
+Etheta=apply(theta,2,"mean")
+
+ypred1=ifelse(Etheta>0.5,1,0)
+accu=length(which(y.occ1[randorow]==ypred1))/length(randorow) #0.74 #0.975
+```
+
+prediction on the testset (remaining trainingset)
+```{r}
+pocc.test= prediction(m.oc1, expCovariance, x[randorow,], x[-randorow,], s[randorow,], s[-randorow,])
+
+pocc.test$summary_beta
+raster.plot(pocc.test$Ef, c("White fish larvae presence log ODDS","(log(amount/m^3))"))
+#points(spred[which(pocc$Ef>20),])
+raster.plot(pocc.test$Varf, c("White fish larvae presence","variance of log ODDS"))
+Etheta=1/(1+exp(-pocc.test$Ef))
+raster.plot(Etheta, c("White fish larvae presence probability","((amount/m^3))"), color = rainbow(6, start = 0.4))
+
+ypred1=ifelse(Etheta>0.5,1,0)
+accu=length(which(y.occ1[-randorow]==ypred1))/(length(y)-length(randorow)) #0.71   
+```
+
+Prediction on full rasterdata
+```{r}
+pocc1= prediction(m.oc1, expCovariance, x[randorow,], xpred , s[randorow,], spred)
+
+pocc1$summary_beta
+raster.plot(pocc1$Ef, c("White fish larvae presence log ODDS"))
+points(spred[which(pocc1$Ef>20),])
+raster.plot(pocc1$Varf, c("White fish larvae presence","variance of log ODDS"))
+raster.plot(1/(1+exp(-pocc1$Ef)), c("White fish larvae presence probability"))
+#q999.dens=quantile(exp(pocc1$Ef), 0.999)
+#raster.plot(pocc1$Ef[exp(pocc1$Ef<q999.dens)], c("White fish larvae presence log ODDS, no outliers","(log(amount/m^3))"))
+```
+
+Compare
+```{r}
+par(mfrow=c(1,2))
+hist(pocc$Ef)
+hist(pocc1$Ef)
+#training data
+disc=as.array(which(ypred!=ypred1))
+y[disc]
+ypred[disc]
+ypred1[disc]
+```
+
+Vendace pres-abs
+```{r}
+y.occ=ifelse(y.v==0,0,1)   #whitefish.dat$WHIBIN[-vol0]
+occur_data <-  list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = x,
+                      s = s,
+                      y = y.occ)
+
+set.seed(123)
+randorow=sample(1:nrow(x),size = 200, replace = F) 
+occur_data_small <-  list(Dx = ncol(x),
+                      N = nrow(x[randorow,]),
+                      Ds = ncol(s),
+                      x = x[randorow,],
+                      s = s[randorow,],
+                      y = y.occ[randorow])
+
+fit.oc.v = stan(model_code =  GP_whitefishmodel_occur , data = occur_data, warmup=500, iter = 1000, chains = 2, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "theta")  )
+saveRDS(fit.oc.v, file = "fit_occ1000_2chain_ven.rds")
+#fit.oc.v = readRDS("fit_occ1000_2chain_ven.rds")
+
+m.oc.v = as.matrix(fit.oc.v)
+#print(fit.w.q)              # Rhat
+summary(fit.oc.v, pars = c("s2_matern", "l", "f[1]", "theta[1]"))            # summary
+stan_trace(fit.oc.v, pars = c("s2_matern", "l", "f[1]", "theta[1]"))         # traceplot
+stan_ac(fit.oc.v,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]", "theta[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.oc.v, pars = c("s2_matern", "l", "f[1]", "theta[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.oc.v, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+prediction on the testset (remaining trainingset)
+```{r}
+pocc.test= prediction(m.oc.v, expCovariance, x[randorow,], x[-randorow,], s[randorow,], s[-randorow,])
+
+pocc.test$summary_beta
+raster.plot(pocc.test$Ef, c("Vendace larvae presence log ODDS","(log(amount/m^3))"))
+#points(spred[which(pocc$Ef>20),])
+raster.plot(pocc.test$Varf, c("Vendace larvae presence","variance of log ODDS"))
+Etheta=1/(1+exp(-pocc.test$Ef))
+raster.plot(Etheta, c("Vendace larvae presence probability","((amount/m^3))"), col=rainbow(6, start = 0.4))
+hist(Etheta)
+ypred=ifelse(Etheta>0.5,1,0)
+accu=length(which(y.occ[-randorow]==ypred))/(length(y)-length(randorow)) #0.74
+```
+### New priors based on glm and pres-abs results
+```{r}
+GP_whitefishmodel_ire_new = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0, upper=3> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+    real<lower=0> r;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ gamma(3, 0.3);   //2,3    
+  
+    // A informative prior for l, that favors short length scale
+    l ~ gamma(2,3);
+
+// A informative prior for r (from glm no rand.eff)
+    r ~ gamma(2, 10 );
+    
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:N) {
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    }
+      
+    
+  }
+  generated quantities {
+    vector[N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+``` 
+      
+with exp covariance and iid random effects:
+```{r}
+  fit1 = stan(model_code =  GP_whitefishmodel_ire_new, data = whitefish_dat_small, warmup=200, iter = 400, chains = 1, 
+  #            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+              control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l","r")  )
+# saveRDS(fit1, file = "fit_wf_ire_exp_gamma1.rds")
+#fit1 <- readRDS("fit_wf_ire_exp_gamma1.rds")
+
+
+m1 = as.matrix(fit1)
+#print(fit1)              # Rhat
+summary(fit1, pars = c("s2_matern", "l", "r"))            # summary
+stan_trace(fit1, pars = c("s2_matern", "l", "r"))         # traceplot
+stan_ac(fit1,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "r"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit1, pars = c("s2_matern", "l", "r")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit1, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+
+
+prediction on test set
+```{r}
+x2 = x[-randorow2,]
+s2 = s[-randorow2,]
+y2 = y[-randorow2]
+V2 = V[-randorow2]
+
+pt= prediction(m1, expCovariance, x1, x2 , s1, s2)
+#saveRDS(p3, file="pred_exp_ire.RData")
+#p3=readRDS("pred_exp_ire.RData")
+
+# linear coefficients(weights): beta estimates
+pt$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(pt$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(pt$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(pt$Ef), c("White fish larvae density","((amount/m^3))"))
+
+plot(log(y2/V2),(pt$Ef), main="log-Density: predictions vs test data")
+abline(0,1,col=2)
+plot((y2/V2),exp(pt$Ef), main="Density: predictions vs test data")
+
+out=which.max(pt$Ef)
+y2[out]  #207
+
+#accuracy
+y2occ=ifelse(y2==0,0,1)
+ypred=round(exp(pt$Ef))
+ypredocc=ifelse(ypred==0,0,1)
+accu=length(which(y2occ==ypredocc))/length(ypredocc)  #0.675
+accu
+```
+Residul plots with prediction from our function
+```{r}
+ind1=-randorow2
+
+### prediction function
+par(mfrow=c(3,3))
+
+p.outlier=which.max(pt$Ef)
+for (i  in 8:15 ) {
+  plot(x[ind1,i], pt$Ef, xlab=rownames(p$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+  points(x[p.outlier,i], pt$Ef[p.outlier], col=2, pch=18, cex=1.3)
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-pt$Ef
+for (i  in 8:15 ) {
+  plot(x[ind1,i], resid, xlab=rownames(pt$summary_beta)[i], main="Residual plot", pch=18, col="light green", ylim=c(-10,10))
+  abline(h=mean(resid), col="dark green")
+  
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x[ind1,i], resid.std, xlab=rownames(pt$summary_beta)[i], main="Std Residual plot", pch=18, col="light green", ylim=c(-5,5))
+     abline(h=mean(resid.std), col="dark green")
+     #points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+
+raster.plot(resid, "residuals pred fun")
+par(mfrow=c(1,2))
+hist(resid)
+boxplot(resid)
+```
+
+prediction on bigger set
+```{r}
+p= prediction(m1, expCovariance, x1, xpred , s1, spred)
+#saveRDS(p3, file="pred_exp_ire.RData")
+#p3=readRDS("pred_exp_ire.RData")
+
+# linear coefficients(weights): beta estimates
+p$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+#q999.dens=quantile(exp(p$Ef), 0.999)
+#raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+### Zero-Inflated and Hurdle Models
+
+As seen in the exploratory step the target variable is really asymmetric, and has a clear peack in 0: 298 out of 642 observations considered (46.42%) is zero, 64 target  observations have value 1 (9.97%), while in only 80 sampling sites were observed more than 50 larvae. This may affect a lot the performance of the model. We implement a model so that we first check for the presence of white fishes with a presence-absnce SDM, and then given the presence we run an abundance SDM. To this aim we can use zero-inflated or hurdle models. Both provide mixtures of a Poisson and Bernoulli probability mass function to allow more flexibility in modeling the probability of a zero outcome. Zero-inflated models, as defined by Lambert (1992), add additional probability mass to the outcome of zero. Hurdle models, on the other hand, are formulated as pure mixtures of zero and non-zero outcomes.
+
+#### Zero inflation
+Consider the following example for zero-inflated Poisson distributions. It uses a parameter theta here there is a probability $\theta$ of drawing a zero, and a probability 1−$\theta$ of drawing from $Poisson(\lambda)$ (now $\theta$ is being used for mixing proportions because $\lambda$ is the traditional notation for a Poisson mean parameter). The probability function is thus
+$$p(y_n|\theta,\lambda)=
+\begin{cases} \theta+(1−\theta)∗Poisson(0|\lambda) \ \ \ if \ y_n=0, \\
+   (1−\theta)∗Poisson(y_n|\lambda) \ \ \ if \ y_n>0.
+\end{cases}$$
+
+Instead of a Poisson distribution for the target, we use the Negative binomial
+```{r}
+  GP_whitefishmodel_inf = "
+    data {
+      int<lower=1> N;
+      int<lower=1> Dx;
+      matrix[N,Dx] x;
+      int<lower=1> Ds;
+      matrix[N,Ds] s;
+      int<lower=0> y[N];
+      vector[N] V;
+    }
+    transformed data {
+      vector[N] mu;
+      matrix[N, N] Dist_spatial;
+      matrix[N, N] Sigma_lin;
+      real s2_lin;
+      s2_lin = 10;
+      for (i in 1:N)
+        mu[i] = 0;
+      // off-diagonal elements
+      for (i in 1:(N-1)) {
+        for (j in (i+1):N) {
+          Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+          Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+          
+          // Fill in the other half
+          Dist_spatial[j, i] = Dist_spatial[i, j];
+          Sigma_lin[j, i] = Sigma_lin[i, j];
+        }
+      }
+      // diagonal elements
+      for (k in 1:N){
+        Dist_spatial[k, k] = 0;
+        Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+      }
+    }
+    parameters {
+      real<lower=0> l;
+      real<lower=0> s2_matern;
+      vector[N] z;
+      real<lower=0> r;
+      real<lower=0, upper=1> theta;
+    }
+    transformed parameters {
+      matrix[N, N] Sigma;
+      matrix[N, N] L;
+      real<lower=0> inv_l;
+    
+      inv_l = inv(l);
+    Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+     //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+      L = cholesky_decompose(Sigma);
+    }
+    model {
+      vector[N] ff;
+      
+      // A weakly informative prior for magnitude
+      s2_matern ~ student_t(4, 0, 1);
+    
+      // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+      l ~ gamma(7, 0.1);
+    
+  // A weakly informative prior for r
+      r ~ gamma(2, 0.1 );
+      
+      z ~ normal(0, 1);
+      ff = L*z;
+    
+  // A weakly informative prior for r
+      theta ~ uniform(0, 1 );
+      
+      for (n in 1:N) {
+      if (y[n] == 0)
+        target += log_sum_exp(bernoulli_lpmf(1 | theta),
+                              bernoulli_lpmf(0 | theta)
+                                + neg_binomial_2_lpmf( y[n]| V[n]*exp(ff[n]), r)); //poisson_lpmf(y[n] | lambda));
+      else
+        target += bernoulli_lpmf(0 | theta)
+                    + neg_binomial_2_lpmf( y[n]| V[n]*exp(ff[n]), r); //poisson_lpmf(y[n] | lambda));
+    }   
+      
+    }
+    generated quantities {
+      vector[N] f;
+      // derived quantity (transform)
+      f = L*z;
+    }"
+```
+
+
+
+```{r}
+ fit.inf = stan(model_code =  GP_whitefishmodel_inf, data = whitefish_dat_small, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "theta", "r")  )
+#saveRDS(fit.v, file = "fit_v_ire_matern_gamma.rds")
+#fit.v2 <- readRDS("fit_v_ire_matern_gamma.rds")
+minf = as.matrix(fit.inf)
+
+
+#print(fit.v)              # Rhat
+summary(fit.inf, pars = c("s2_matern", "l", "f[1]", "r", "theta"))            # summary
+stan_trace(fit.inf, pars = c("s2_matern", "l", "f[1]", "r", "theta"))         # traceplot
+stan_ac(fit.inf,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]", "r", "theta"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.inf, pars = c("s2_matern", "l", "f[1]", "r", "theta")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.inf, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+```{r}
+p= prediction(minf, expCovariance, x1, xpred , s, spred1)
+f=as.matrix(fit.inf, pars="f")
+Ef.tr=apply(f,2, "mean")
+# linear coefficients(weights): beta estimates
+p$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p$Ef), 0.999)
+raster.plot(p$Ef[exp(p$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+Check the predictions for training locations only: in mean, the estimates for logdensity of larvae fails to predict bigger density. There is still an outlier density in the training data, but the predictions seem not to work that well for smaller log densities either.
+```{r}
+# predictions at training locations
+p.tr= prediction(minf, expCovariance, x1, x1 , s1, s1)
+# training data target
+y.logdens= log(y1/V1)
+y.logdens[!is.finite(y.logdens)]=0
+
+plot(y.logdens,(p.tr$Ef), xlab="train log(y/V)", ylab="pred log(y/V)", main="Predictions vs training larvae log density")
+plot(y.logdens,(p.tr$Ef),xlab="train log(y/V)", ylab="pred log(y/V)",  ylim=c(-3,5), main="Predictions vs training larvae log density")
+abline(0,1, col=2)
+
+par(mfrow=c(2,2))
+for (i  in 8:15 ) {
+  plot(x1[,i], y.logdens, xlab=rownames(p.tr$summary_beta)[i], main="Obs target vs cov", pch=18, col="light blue")
+}
+
+for (i  in 8:15 ) {
+  plot(x1[,i], p.tr$Ef, xlab=rownames(p.tr$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+}
+```
+
+There is an observation for which we have a very high prediction, compered to all the others: is the number 217, its observed aboundance is indeed 1.
+
+
+#### Hurdle
+The hurdle model is similar to the zero-inflated model, but more flexible in that the zero outcomes can be deflated as well as inflated. The probability mass function for the hurdle likelihood is defined by
+
+$$p(y_n|\theta,\lambda)=
+\begin{cases} \theta\ \ \ if \ y_n=0, \\
+(1−\theta) \frac{Poisson(y|\lambda)}{1−PoissonCDF(\theta|\lambda)} \ \ \ if \ y_n>0.
+\end{cases}$$
+```{r}
+GP_whitefishmodel_hurdle = "
+  data {
+    int<lower=1> N; 
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s; 
+    int<lower=0> y[N];
+    vector[N] V;
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+    real<lower=0> r;
+    real<lower=0, upper=1> theta;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+    l ~ gamma(7, 0.1);
+  
+// A weakly informative prior for r
+    r ~ gamma(2, 0.1 );
+    
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+// A weakly informative prior for r
+    theta ~ uniform(0, 1 );
+   
+     
+    for (n in 1:N) {
+       if (y[n] == 0)
+        1 ~ bernoulli(theta);
+        else {
+          0 ~ bernoulli(theta);
+          y[n] ~ neg_binomial_2( V[n]*exp(ff[n]), r) T[1, ];
+      }
+    }   
+    
+  }
+  generated quantities { 
+    vector[N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+```
+
+```{r}
+fit.hur = stan(model_code =  GP_whitefishmodel_hurdle, data = whitefish_dat_small, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "theta", "r")  )
+#saveRDS(fit.v, file = "fit_v_ire_matern_gamma.rds")
+#fit.v2 <- readRDS("fit_v_ire_matern_gamma.rds")
+mhur = as.matrix(fit.hur)
+
+
+#print(fit.v)              # Rhat
+summary(fit.hur, pars = c("s2_matern", "l",  "theta", "r"))            # summary
+stan_trace(fit.hur, pars = c("s2_matern", "l",  "theta", "r"))         # traceplot
+stan_ac(fit.hur,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l",  "theta", "r"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.hur, pars = c("s2_matern", "l", "theta", "r") ))  # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.hur, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+
+```{r}
+#phu= prediction(mhur, expCovariance, x1, xpred , s1, spred)
+
+phu$summary_beta
+raster.plot(phu$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+points(spred[which(phu$Ef>20),])
+raster.plot(phu$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(phu$Ef), c("White fish larvae density","((amount/m^3))"))
+q999.dens=quantile(exp(phu$Ef), 0.999)
+raster.plot(phu$Ef[exp(phu$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+```
+
+ Figure out where are these wierd predictions located: about 0.5% of the predictions are higher than 10. If we look at their covariates values, they are quite standard.
+```{r}
+quantile(phu$Ef,0.995)
+
+raster.plot(phu$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+ points(spred[which(phu$Ef>10),1]*1000, spred[which(phu$Ef>10),2]*1000, col=1, cex=1, pch=1)
+ points(spred[which(phu$Ef>50),1]*1000, spred[which(phu$Ef>50),2]*1000, col=2, cex=1, pch=1)
+ legend("topleft", c("pred.logdensity >10","pred.logdensity >50"), pch=1, col=1:2, bty = "n")
+ 
+ # whitefish.raster[which(phu$Ef>50),]
+```
+ 
+Let s investigate the output of the predict function applied to the training set: we can obtain them either from stan model output either from the prpedction function.
+```{r}
+# from prediction function
+p.tr1= prediction(mhur, expCovariance, x1, x1 , s1, s1)
+
+# from Stan
+f=as.matrix(fit.hur, pars="f")
+Ef.tr1=apply(f,2, "mean")
+
+# should be similar..
+raster.plot(Ef.tr1, c("White fish larvae log density","stan mod"))
+raster.plot(phu$Ef, c("White fish larvae log density","predict fun"))
+par(mfrow=c(2,2))
+ hist(p.tr1$Ef, main= "predict logdensity")
+ hist(p.tr1$Ef[-217], main= c("predict logdensity","outlier excluded"))
+ hist(Ef.tr1, main= "stan logdensity")
+ hist(y.logdens, main="observed logdensity")
+ qqplot(p.tr1$Ef,y.logdens, main= "predict logdensity")
+ qqplot(p.tr1$Ef[-217],y.logdens, main= c("predict logdensity","outlier excluded"))
+ qqplot(Ef.tr1,y.logdens, main= "stan logdensity")
+ 
+
+diff=p.tr1$Ef-Ef.tr1
+par(mfrow=c(1,1))
+plot(diff)
+```
+Obs 217 is predicted very differently by the two prediction methods, there is something wrong in prediction function. Stan output gives quite better results, in general.
+
+```{r}
+# predictions for training data with pred function
+plot(y.logdens,(p.tr1$Ef), xlab="train log(y/V)", ylab="pred log(y/V)", main="Predictions vs training larvae log density")
+plot(y.logdens,(p.tr1$Ef),xlab="train log(y/V)", ylab="pred log(y/V)",  ylim=c(-5,5), main="Predictions vs training larvae log density")
+abline(0,1, col=2)
+
+# predictions for training data with stan output
+plot(y.logdens,(Ef.tr1), xlab="train log(y/V)", ylab="pred log(y/V)", main="Predictions vs training larvae log density, Stan")
+abline(0,1, col=2)
+
+```
+
+
+Residul plots with prediction from our function
+```{r}
+### prediction function
+par(mfrow=c(3,3))
+
+p.outlier=which.max(p.tr1$Ef)
+for (i  in 8:15 ) {
+  plot(x1[,i], p.tr1$Ef, xlab=rownames(p.tr$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+  points(x1[p.outlier,i], p.tr1$Ef[p.outlier], col=2, pch=18, cex=1.3)
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-p.tr1$Ef
+for (i  in 8:15 ) {
+  plot(x1[,i], resid, xlab=rownames(p.tr$summary_beta)[i], main="Residual plot", pch=18, col="light green", ylim=c(-10,10))
+  abline(h=mean(resid), col="dark green")
+  points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x1[,i], resid.std, xlab=rownames(p.tr$summary_beta)[i], main="Std Residual plot", pch=18, col="light green", ylim=c(-5,5))
+     abline(h=mean(resid.std), col="dark green")
+     points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+
+raster.plot(resid, "residuals pred fun")
+```
+
+Residual plots with prediction from stan output
+```{r}
+### Stan pred
+par(mfrow=c(3,3))
+
+for (i  in 8:15 ) {
+  plot(x1[,i], Ef.tr1, xlab=rownames(p.tr$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-Ef.tr1
+for (i  in 8:15 ) {
+  plot(x1[,i], resid, xlab=rownames(p.tr$summary_beta)[i], main="Residual plot", pch=18, col="light green", ylim=c(-10,10))
+  abline(h=mean(resid), col="dark green")
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x1[,i], resid.std, xlab=rownames(p.tr$summary_beta)[i], main="Std Residual plot", pch=18, col="light green", ylim=c(-10,10))
+     abline(h=mean(resid.std), col="dark green")
+     points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+raster.plot(resid, "residuals Stan")
+```
+
+Observation 217 has a very big prediction (260) compared to its observed value, which is 1. But its covariate values are quite standard.
+Exculedd this variable, residual plots show random pattens meaning the linear model fits quite well. Using stan predictions, they look less random.
+
+Look at the presence absence
+```{r}
+theta=as.matrix(fit.hur, par= "theta")
+
+#presence/asence observed
+y1.bool=ifelse(y1==0,0,1)
+#abundance predicted
+Ey1.tr=round(V1*exp(Ef.tr1))
+#presence/absence predicted
+Ey1.bool=ifelse(Ey1.tr==0,0,1)
+
+df.pr.abs= data.frame(y1,Ey1.tr, y1.bool,  Ey1.bool)
+rownames(df.pr.abs)=NULL
+
+#accuracy
+accu=length(which(df.pr.abs$y1.bool==df.pr.abs$Ey1.bool))/nrow(df.pr.abs)
+accu
+
+#how much wrong is abundance prediction on average
+mean(abs(y1-Ey1.tr)) #a lot..
+```
+
+
+
+### Quadratic effect
+```{r}
+#square scaled covariates
+x2=apply(x[,8:15], 2, '^',2)
+x_q=cbind(x,x2)
+
+```
+
+```{r}
+#square original covariates, then scale 
+x.q = matrix(0,nrow=nrow(whitefish.dat),ncol=23)      # intercept + 5 BOTTOMCLS classes + 8 continues covariates
+x.q[,1] = 1                             # Set the column corresponding to intercept to 1
+x.q[whitefish.dat$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+x.q[whitefish.dat$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+x.q[whitefish.dat$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+x.q[whitefish.dat$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+x.q[whitefish.dat$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+x.q[whitefish.dat$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xcont2 = as.matrix(cbind(whitefish.dat.cov$DIS_SAND,
+                        whitefish.dat.cov$FE300ME,
+                        whitefish.dat.cov$ICELAST09,
+                        whitefish.dat.cov$RIVERS,
+                        whitefish.dat.cov$DIST20M, 
+                        whitefish.dat.cov$CHL_A,
+                        whitefish.dat.cov$TEMP09M,
+                        whitefish.dat.cov$SALT09M,
+                        whitefish.dat.cov$DIS_SAND^2,
+                        whitefish.dat.cov$FE300ME^2,
+                        whitefish.dat.cov$ICELAST0^2,
+                        whitefish.dat.cov$RIVERS^2,
+                        whitefish.dat.cov$DIST20M^2, 
+                        whitefish.dat.cov$CHL_A^2,
+                        whitefish.dat.cov$TEMP09M^2,
+                        whitefish.dat.cov$SALT09M^2))
+stdxcont2 = apply(xcont2, 2, sd)
+mxcont2 = apply(xcont2, 2, mean)
+x.q[,8:23] = t( apply( t(apply(xcont2,1,'-',mxcont2)),1,'/',stdxcont2) )    # "standardize" the continuous covariates
+x.q=x.q[-vol0,]
+```
+
+Model with quadratic effect
+```{r}
+GP_whitefishmodel_quad = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    int<lower=1> Dx2;
+    matrix[N,Dx] x;
+    matrix[N,Dx2] x2;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+  }
+  transformed data {
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    real s2_lin;
+    s2_lin = 10;
+    for (i in 1:N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i]+x2[i],x[j]+x2[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k]+x[k]^2,x[k]+x2[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+    real<lower=0> r;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    real<lower=0> inv_l;
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+    l ~ gamma(7, 0.1);
+  
+// A weakly informative prior for r
+    r ~ gamma(2, 0.1 );
+    
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:N) {
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    }
+      
+    
+  }
+  generated quantities {
+    vector[N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+``` 
+
+Whitefish, with exponential covariance
+```{r}
+wf_data_q <-  list(Dx = ncol(x_q),
+                      N = nrow(x_q),
+                      Ds = ncol(s),
+                      x = x.q,
+                      s = s,
+                      y = y,
+                      V = V)
+
+set.seed(123)
+randorow=sample(1:nrow(x),size = 200, replace = F) 
+wf_data_q_small <-  list(Dx = ncol(x_q),
+                      N = nrow(x_q[randorow,]),
+                      Ds = ncol(s),
+                      x = x.q[randorow,],
+                      s = s[randorow,],
+                      y = y[randorow],
+                      V = V[randorow])
+
+fit.w.q = stan(model_code =  GP_whitefishmodel_ire , data = wf_data_q_small, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "r")  )
+# saveRDS(fit.w.q, file = "fit_w2.rds")
+#fit.w.q = readRDS("fit_w2.rds")
+
+m.wq = as.matrix(fit.w.q)
+#print(fit.w.q)              # Rhat
+summary(fit.w.q, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit.w.q, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit.w.q,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.w.q, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.w.q, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+Vendace
+```{r}
+ven_data_q <-  list(Dx = ncol(x),
+                      N = nrow(x_q),
+                      Ds = ncol(s),
+                      x = x.q,
+                      s = s,
+                      y = y.ven,
+                      V = V)
+# fit.v.q = stan(model_code =  GP_whitefishmodel_ire, data = ven_data_q, warmup=150, iter = 500, chains = 1, 
+#            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+#            control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l")  )
+# saveRDS(fit.v.q, file = "fit_v2.rds")
+fit.v.q = readRDS( "fit_v2.rds")
+m.vq = as.matrix(fit.v.q)
+
+
+#print(fit.v.q)              # Rhat
+summary(fit.v.q, pars = c("s2_matern", "l", "f[1]"))            # summary
+stan_trace(fit.v.q, pars = c("s2_matern", "l", "f[1]"))         # traceplot
+stan_ac(fit.v.q,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.v.q, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.v.q, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+
+And do spatial predictions
+```{r}
+# Prediction variables
+spred = as.matrix(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89)) / 1000  # spatial coordinates in km
+xpred.q = matrix(0,nrow=nrow(spred),ncol=23)      # intercept + 6 BOTTOMCLS classes + 5 continues covariates
+xpred.q[,1] = 1                             # Set the column corresponding to intercept to 1
+xpred.q[whitefish.raster$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xpredcont.q = as.matrix(cbind(whitefish.raster$DIS_SAND,
+                            whitefish.raster$FE300ME,
+                            whitefish.raster$ICELAST09,
+                            whitefish.raster$RIVERS,
+                            whitefish.raster$DIST20M,
+                            whitefish.raster$CHL_A, 
+                            whitefish.raster$TEMP09M,
+                            whitefish.raster$SALT09M,
+                            whitefish.raster$DIS_SAND^2,
+                            whitefish.raster$FE300ME^2,
+                            whitefish.raster$ICELAST09^2,
+                            whitefish.raster$RIVERS^2,
+                            whitefish.raster$DIST20M^2,
+                            whitefish.raster$CHL_A^2, 
+                            whitefish.raster$TEMP09M^2,
+                            whitefish.raster$SALT09M^2))
+
+stdxcont.q = apply(x_q[,8:23], 2, sd)
+mxcont.q = apply(x_q[,8:23], 2, mean)
+xpred.q[,8:23] = t( apply( t(apply(xpredcont.q,1,'-',mxcont.q)),1,'/',stdxcont.q) )    # "standardize" the continuous covariates
+
+```
+
+Whitefish predictions
+```{r}
+#p.wq= prediction(m.wq, expCovariance, x.q, xpred.q , s, spred)
+#saveRDS(p.wq, file="pred_w2.RData")
+p.wq=readRDS("pred_w2.RData")
+
+# linear coefficients(weights): beta estimates
+p.wq$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p.wq$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p.wq$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p.wq$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p.wq$Ef), 0.999)
+raster.plot(p.wq$Ef[exp(p.wq$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+Vendace predictions
+```{r}
+# p.vq= prediction(m.wq, expCovariance, x.q, xpred.q , s, spred)
+#saveRDS(p.vq, file="pred_v2.RData")
+p.vq=readRDS("pred_v2.RData")
+
+# linear coefficients(weights): beta estimates
+p.vq$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p.vq$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p.vq$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p.vq$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p.vq$Ef), 0.999)
+raster.plot(p.vq$Ef[exp(p.vq$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+
+      ### Quadratic effect prediction in stan
+Something wrong with our predictions.. let s look at predictions inside stan
+```{r}
+wf_data_q_small_pred = list(Dx = ncol(x_q), Ds = ncol(s),
+                         N = length(ind2),
+                         x = x_q[ind2,],
+                         s = s[ind2,],
+                         y = y[ind2],
+                         V = V[ind2],
+   	                    Np = length(ind1),
+                         xp = x_q[ind1,],
+                         sp = s[ind1,])
+ fit.w.q = stan(model_code =  GP_whitefishmodel_pred , data = wf_data_q_small_pred, warmup=150, iter = 500, chains = 1, 
+  #            #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+             control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "r","fp")  )
+
+ m.wq = as.matrix(fit.w.q)
+#print(fit.v.q)              # Rhat
+summary(fit.w.q, pars = c("s2_matern", "l", "f[1]","r"))            # summary
+stan_trace(fit.w.q, pars = c("s2_matern", "l", "f[1]","r"))         # traceplot
+stan_ac(fit.w.q,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "f[1]","r"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.w.q, pars = c("s2_matern", "l", "f[1]")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.w.q, pars = c("l", "s2_matern"), color = "black", size = 3)
+
+```
+
+```{r}
+f=as.matrix(fit.w.q, pars="fp")
+Ef.pr=apply(f,2, "mean")
+Varf.pr=apply(f,2, "var")
+
+raster.plot(Ef.pr, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(Varf.pr, c("White fish larvae","variance of log density"))
+raster.plot(exp(Ef.pr), c("White fish larvae density","((amount/m^3))"))
+```
+
+Residul plots with prediction from stan output
+```{r}
+# test data target
+y.logdens= log(y[ind1]/V[ind1])
+y.logdens[!is.finite(y.logdens)]=0
+plot(Ef.pr,y.logdens)
+abline(0,1, col=2)
+plot(exp(Ef.pr),y[ind1]/V[ind1])
+abline(0,1, col=2)
+
+### Stan pred
+par(mfrow=c(3,3))
+
+for (i  in 8:15 ) {
+  plot(x_q[ind1,i]+x_q[ind1,i+8], Ef.pr, xlab=rownames(p$summary_beta)[i], main="Predicted target vs cov", pch=18, col="orange")
+}
+
+par(mfrow=c(3,3))
+#residual plots
+resid= y.logdens-Ef.pr
+for (i  in 8:15 ) {
+  plot(x_q[ind1,i]+x_q[ind1,i+8], resid, xlab=rownames(p$summary_beta)[i], main="Residual plot", pch=18, col="light green")
+  abline(h=mean(resid), col="dark green")
+}
+
+par(mfrow=c(3,3))
+resid.std= (resid-mean(resid))/sd(resid)
+ for (i  in 8:15 ) {
+     plot(x_q[ind1,i]+x_q[ind1,i+8], resid.std, xlab=rownames(p$summary_beta)[i], main="Std Residual plot", pch=18, col="light green")
+     abline(h=mean(resid.std), col="dark green")
+     #points(x1[which.max(p.tr1$Ef),i], resid[which.max(p.tr1$Ef)], col=2, cex=1.3)
+}
+raster.plot(resid, "residuals Stan")
+```
+
+prediction out of stan..
+```{r}
+p.wq= prediction(m.wq, expCovariance, x_q[ind2,], xpred.q , s[ind2,], spred)
+#saveRDS(p.wq, file="pred_w2.RData")
+#p.wq=readRDS("pred_w2.RData")
+
+# linear coefficients(weights): beta estimates
+p.wq$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p.wq$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p.wq$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p.wq$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p.wq$Ef), 0.999)
+raster.plot(p.wq$Ef[exp(p.wq$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+### Cross validation
+Let's compare the two SDMs: the linear model and the one with additional quadratic effect. We use cross validation method: we calculate the $k$-fold-CV estimate, that is 
+$$\mathrm{CV} = \frac{1}{n} \sum_{i=1}^n \log p(y_i|x_i,D_{\setminus k(i)}) \approx \frac{1}{n} \sum_{i=1}^n \frac{1}{M} \log p(y_i|x_i,\theta^{s})  $$
+where $\theta^s\sim p(\theta|D_{\setminus k(i)})$ and $D_{\setminus k(i)}$ denotes the data from where the block including the data point $i$ is excluded. We set $k=10$.
+
+Kfold : computing neg.binomial lpmf for prediction set as a genereted quantity in the stan model.. problems.
+```{r}
+GP_whitefishmodel_cv = "
+  data {
+    int<lower=1> N;   // training data
+    int<lower=1> Dx;
+    matrix[N,Dx] x;
+    int<lower=1> Ds;
+    matrix[N,Ds] s;
+    int<lower=0> y[N];
+    vector[N] V;
+    int<lower=1> Np;  // test data
+    matrix[Np,Dx] xp;
+    matrix[Np,Ds] sp;
+    int<lower=0> yp[Np];
+    vector[Np] Vp;
+  }
+  transformed data {  
+    vector[N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[N, N] Sigma_lin;
+    vector[Np] mup;
+    matrix[Np, Np] Dist_spatialp;
+    matrix[Np, Np] Sigma_linp;
+    real s2_lin;
+    s2_lin = 10;
+    
+    for (i in 1:N)
+      mu[i] = 0;
+    for (i in 1:Np)
+      mup[i] = 0;
+    
+    // off-diagonal elements
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+    
+        // off-diagonal elements
+    for (i in 1:(Np-1)) {
+      for (j in (i+1):Np) {
+        Dist_spatialp[i, j] = pow(dot_self(sp[i] - sp[j]),0.5)  ;    
+        Sigma_linp[i, j] = s2_lin * dot_product(xp[i],xp[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Dist_spatialp[j, i] = Dist_spatialp[i, j];
+        Sigma_linp[j, i] = Sigma_linp[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:Np){
+      Dist_spatialp[k, k] = 0;
+      Sigma_linp[k, k] = s2_lin * dot_product(xp[k],xp[k]) + 1e-6;   // add also some jitter
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[N] z;
+      vector[Np] zp;
+    real<lower=0> r;
+  }
+  transformed parameters {
+    matrix[N, N] Sigma;
+    matrix[N, N] L;
+    matrix[Np, Np] Sigmap;
+    matrix[Np, Np] Lp;
+    real<lower=0> inv_l;
+   
+  
+    inv_l = inv(l);
+  Sigma = s2_matern*exp(-inv_l*Dist_spatial ) + Sigma_lin; // Exponential   
+  Sigmap = s2_matern*exp(-inv_l*Dist_spatialp ) + Sigma_linp; // Exponential   
+
+   //     Sigma = s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial)  + Sigma_lin ;  //Matern
+    L = cholesky_decompose(Sigma);
+    Lp = cholesky_decompose(Sigmap);
+  }
+  model {
+    vector[N] ff;
+    vector[Np] ffp;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l, that shrinks to 0 cor. among locations with more than 50km dist
+    l ~ gamma(7, 0.1);
+  
+// A weakly informative prior for 
+    r ~ gamma(2, 0.1 );
+    
+    z ~ normal(0, 1);
+    zp ~ normal(0, 1);
+    ff = L*z;
+    ffp = Lp*zp;
+  
+    for (n in 1:N) {
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    }
+      
+    
+  }
+  generated quantities {
+    vector[N] f;
+    vector[Np] fp;
+    //vector[Np] Lik;
+    
+    // derived quantity (transform)
+    f = L*z;
+    fp = Lp*zp;
+    //for(i in 1:Np) Lik[i] = neg_binomial_2_lpmf(yp[i] |Vp[i]*exp(fp[i]),r); 
+
+  }"
+
+
+#stanStruct = stan_model(model_code = GP_whitefishmodel_cv)
+``` 
+
+```{r, warning=FALSE, results='hide'}
+# | K-fold Cross-Validation
+cv= function(data, stanStruct,  K=10){
+  # shuffle the data so that cross validation is done with random divisions
+  
+  rows = sample(nrow(data))
+  df = data[rows,]
+  x = as.matrix(subset(df, select=-c(y,V,s1,s2)))  # target first place
+  y = df$y
+  V = df$V
+  s =cbind(df$s1, df$s2)
+  
+  B = ceiling(length(y)/K)  # the size of each fold
+  n = length(y)
+  logLikest = c();
+  
+  for (i in 1:K) {
+  	ind1 = (B*(i-1)+1):min(n, i*B)    # indexes of test data 
+  	ind2 = which(y != y[ind1]);  # indexes of training data 
+  	# dataset for the ith fold
+  	dataset = list(Dx = ncol(x), Ds = ncol(s),
+                        N = length(ind2),
+                        x = x[ind2,],
+                        s = s[ind2,],
+                        y = y[ind2],
+                        V = V[ind2],
+  	                    Np = length(ind1),
+                        xp = x[ind1,],
+                        sp = s[ind1,],
+                        yp = y[ind1],
+                        Vp = V[ind1])
+  
+  	# posterior samples
+  	post = sampling(stanStruct, data = dataset, chains = 1, warmup = 100, thin = 1, iter = 600)
+  	M = extract(post)
+  	# log point-wise posterior predictive density estimates
+  	logLikest[ind1] = log(colMeans(M$Lik))
+  }
+  
+  KfoldCV = mean(logLikest)
+  return(KfoldCV)
+}
+
+```
+  
+  
+Try a different approach: use the previous stan function for training data (ind2) and previous prediction function for test data (ind1). 
+```{r}
+cv1 = function(data, stanmodel, K=5) {
+ rows = sample(nrow(data))
+  df = data[rows,]
+  x = as.matrix(subset(df, select=-c(y,V,s1,s2)))  # target first place
+  y = df$y
+  V = df$V
+  s =cbind(df$s1, df$s2)
+  
+  B = ceiling(length(y)/K)  # the size of each fold
+  n = length(y)
+  logLikest = c();
+  
+  for (i in 1:K) {
+  	ind1 = (B*(i-1)+1):min(n, i*B)    # indexes of test data 
+  	ind2 = which(y != y[ind1]);  # indexes of training data 
+  	# dataset for the ith fold
+  	dataset = list(Dx = ncol(x),
+  	               Ds = ncol(s),
+                   N = nrow(x[ind2,]),
+                   x = x[ind2,],
+  	               s = s[ind2,],
+                   y = y[ind2],
+                   V = V[ind2])
+
+  
+  	# posterior samples
+  	post = stan(model_code =stanmodel, data = dataset, chains = 1, warmup = 150, thin = 1, iter = 500,
+  	                control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "r"))
+  	r = as.matrix(post, pars="r")
+  	m = as.matrix(post)
+  	# log point-wise posterior predictive density estimates
+  	Np = length(ind1)
+    xp = x[ind1,]
+    sp = s[ind1,]
+    yp = y[ind1]
+    Vp = V[ind1]
+    p = prediction(m, expCovariance, x[ind2,], xp , s[ind2,], sp, thin=1)
+    
+    lik.yp=matrix(nrow=length(r), ncol=length(ind1)) #row=MC iter, col=pred obs
+    for (j in 1:length(r)) {
+      lik.yp[j,] = dnbinom(yp, mu = Vp*exp(p$EfMC[,j]), size =r[j])
+    }
+  	logLikest[ind1] = log(colMeans(lik.yp))
+  	print(logLikest)
+  }
+  logLikest[!is.finite(logLikest)] = -200
+  KfoldCV = mean(logLikest, na.rm =T)
+  return(KfoldCV)
+}
+```
+
+```{r}
+y= whitefish.dat$WHISUM[-vol0]
+#wf 1degree poly
+data = data.frame(y, x,V,s1=s[,1], s2=s[,2])
+Kfoldcv.wf =-7.081072 #cv1(data, GP_whitefishmodel_ire) #   
+
+#ven 1degree poly
+data = data.frame(y=y.ven, x,V, s1=s[,1], s2=s[,2])
+Kfoldcv.ven = -2.984913 #cv1(data, GP_whitefishmodel_ire)  #    (-4.460242 )
+
+#wf 2degree poly
+data = data.frame(y, x_q,V,s1=s[,1], s2=s[,2])
+Kfoldcv.wf2 =-4.987135 #cv1(data, GP_whitefishmodel_ire)  #    
+
+#ven 2degree poly
+data = data.frame(y=y.ven, x_q,V,s1=s[,1], s2=s[,2])
+Kfoldcv.ven2 =-5.545475 #cv1(data, GP_whitefishmodel_ire) #
+
+cv.df = data.frame(model=c("whitefish 1poly","vendace 1poly","whitefish 2poly","vendace 2poly"), Kfoldcv=c(Kfoldcv.wf,Kfoldcv.ven,Kfoldcv.wf2,Kfoldcv.ven2))
+cv.df
+```
+
+\newpage
+### Future predictions
+After comparing the models we do predictions for future years. 
+We assume the only variables which will change significantly are salinity, temperature (last ice coverage, rivers). The values for future covariates have been recovered by mean of specific models, implemented in the SmartSea project. We consider as representative of future situation the mean value of the last available decade (2049-2059), predicted in April -June. 
+```{r}
+whitefish.raster = read.table("white_fishes_final_raster_fut.txt", header=TRUE) 
+whitefish.raster.past = read.table("white_fishes_final_raster.txt", header=TRUE) 
+
+```
+We now compare the environmental covariates for future years, and the one from past years, by plotting the raster layers.
+The temperature has an average increase of 2 degreres, while salinity generally decreases a bit, but its variation is less evident than the temperature gradient.
+
+```{r}
+# Visualize few environmental covariates
+e <- extent(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89))
+r <- raster(e, ncol=length(unique(whitefish.raster$E_etrs89)), nrow=length(unique(whitefish.raster$N_etrs89)))
+# Visualize the study area
+
+par(mfrow=c(1,2))
+
+# temperature
+z <- rasterize(cbind(whitefish.raster.past$E_etrs89,whitefish.raster.past$N_etrs89), r, whitefish.raster.past$TEMP09M, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster.past$E_etrs89),max(whitefish.raster.past$E_etrs89)),
+     ylim=cbind(min(whitefish.raster.past$N_etrs89),max(whitefish.raster.past$N_etrs89)), main=c("Average temperature","May-June 1975-2005"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, whitefish.raster$TEMP09M_FUT, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Average temperature","May-June 2049-2059"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+
+# salinity
+z <- rasterize(cbind(whitefish.raster.past$E_etrs89,whitefish.raster.past$N_etrs89), r, whitefish.raster.past$SALT09M, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster.past$E_etrs89),max(whitefish.raster.past$E_etrs89)),
+     ylim=cbind(min(whitefish.raster.past$N_etrs89),max(whitefish.raster.past$N_etrs89)), main=c("Average salinity ","May-June 1975-2005"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, whitefish.raster$SALT09M_FUT, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Average salinity ","May-June 2049-2059"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+# icelast
+z <- rasterize(cbind(whitefish.raster.past$E_etrs89,whitefish.raster.past$N_etrs89), r, whitefish.raster.past$ICELAST09, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster.past$E_etrs89),max(whitefish.raster.past$E_etrs89)),
+     ylim=cbind(min(whitefish.raster.past$N_etrs89),max(whitefish.raster.past$N_etrs89)), main=c("Average of last week of ice coverage ","2000-2005"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, whitefish.raster$ICELAST_FUT, fun=mean)
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Average of last week of ice coverage","2049-2059"))
+# Plot the locations of sampling sites
+points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89, cex=0.7)
+
+```
+
+We do predictions on larvae densities of the two species, by using as future covariates the new dataset, with future values for temperature and salinity.
+We use the model with quadratic effect which turns out to be the best one in terms of prediction accuracy, with exponential covariance function.
+```{r}
+# Prediction variables
+spred = as.matrix(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89)) / 1000  # spatial coordinates in km
+xpred.q = matrix(0,nrow=nrow(spred),ncol=22)      # intercept + 6 BOTTOMCLS classes + 5 continues covariates
+xpred.q[,1] = 1                             # Set the column corresponding to intercept to 1
+xpred.q[whitefish.raster$BOTTOMCLS==1,2] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==2,3] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==3,4] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==4,5] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+xpred.q[whitefish.raster$BOTTOMCLS==5,6] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xpredcont.q = as.matrix(cbind(whitefish.raster$DIS_SAND,
+                            whitefish.raster$FE300ME,
+                            whitefish.raster$ICELAST_FUT,
+                            whitefish.raster$RIVERS,
+                            whitefish.raster$DIST20M,
+                            whitefish.raster$CHL_A, 
+                            whitefish.raster$TEMP09M_FUT,
+                            whitefish.raster$SALT09M_FUT,
+                            whitefish.raster$DIS_SAND^2,
+                            whitefish.raster$FE300ME^2,
+                            whitefish.raster$ICELAST_FUT^2,
+                            whitefish.raster$RIVERS^2,
+                            whitefish.raster$DIST20M^2,
+                            whitefish.raster$CHL_A^2, 
+                            whitefish.raster$TEMP09M_FUT^2,
+                            whitefish.raster$SALT09M_FUT^2))
+
+stdxcont.q = apply(x_q[,7:22], 2, sd)
+mxcont.q = apply(x_q[,7:22], 2, mean)
+xpred.q[,7:22] = t( apply( t(apply(xpredcont.q,1,'-',mxcont.q)),1,'/',stdxcont.q) )    # "standardize" the continuous covariates
+
+```
+
+Whitefish predictions
+```{r}
+#p.wq.fut= prediction(m.wq, expCovariance, x_q, xpred.q , s, spred)
+#saveRDS(p.wq.fut, file="pred_w2_fut.RData")
+p.wq=readRDS("pred_w2_fut.RData")
+
+# linear coefficients(weights): beta estimates
+p.wq$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p.wq$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p.wq$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p.wq$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p.wq$Ef), 0.999)
+raster.plot(p.wq$Ef[exp(p.wq$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+
+```
+We compute and visualize the difference in larvae aboundance between past and future density
+```{r}
+p.wq=readRDS("pred_w2.RData")
+p.wq.fut=readRDS("pred_w2_fut.RData")
+
+  par(mfrow=c(1,2))
+# Posterior median of difference of past and future log density
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, (p.wq$Ef-p.wq.fut$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Difference in white fish larvae log-density", "(log(amount/m^3))"))
+# Posterior median of difference of past and future density
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, exp(p.wq$Ef)- exp(p.wq.fut$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Difference in white fish larvae density", "(amount/m^3)"))
+```
+
+Vendace predictions
+```{r}
+#p.vq.fut= prediction(m.wq, expCovariance, x_q, xpred.q , s, spred)
+#saveRDS(p.vq.fut, file="pred_v2_fut.RData")
+p.vq=readRDS("pred_v2_fut.RData")
+
+# linear coefficients(weights): beta estimates
+p.vq$summary_beta
+
+#points(whitefish.dat$E_etrs89,whitefish.dat$N_etrs89)
+raster.plot(p.vq$Ef, c("White fish larvae log density","(log(amount/m^3))"))
+raster.plot(p.vq$Varf, c("White fish larvae","variance of log density"))
+raster.plot(exp(p.vq$Ef), c("White fish larvae density","((amount/m^3))"))
+
+q999.dens=quantile(exp(p.vq$Ef), 0.999)
+raster.plot(p.vq$Ef[exp(p.vq$Ef<q999.dens)], c("White fish larvae log density, no outliers","(log(amount/m^3))"))
+```
+
+We compute and visualize the difference in larvae aboundance between past and future density
+```{r}
+p.vq=readRDS("pred_v2.RData")
+p.vq.fut=readRDS("pred_v2_fut.RData")
+
+par(mfrow=c(1,2))
+# Posterior median of difference of past and future density
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, (p.vq$Ef-p.vq.fut$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Difference in vendace larvae log-density", "(log(amount/m^3))"))
+# Posterior median of difference of past and future density
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, exp(p.vq$Ef)-exp(p.vq.fut$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Difference in vendace larvae density", "(amount/m^3)"))
+
+```
+
+We draw the response curve along salinity, temperature and last ice
+cover day within the range of the current and future covariate values.
+```{r}
+### Whitefish
+par(mfrow=c(1,2))
+  plot(whitefish.raster.past$TEMP09M, p.wq$Ef, type="l",xlab="temp 1975-2005", ylab="whitwfish log-density",main="Whitefish - Past temp ")
+```
+
+
+Finally we compute the total biomass in the GoB, for future larvae density of the two species
+```{r}
+par(mfrow=c(1,2))
+
+# Posterior median of tot biomass in the past 
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, (p.wq$Ef+p.vq$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Average total biomass 1975-2005", "log(amount/m^3)"))
+
+# Posterior median of tot biomass in the future
+z <- rasterize(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89), r, (p.wq.fut$Ef+p.vq.fut$Ef))
+plot(z, xlim=cbind(min(whitefish.raster$E_etrs89),max(whitefish.raster$E_etrs89)),
+     ylim=cbind(min(whitefish.raster$N_etrs89),max(whitefish.raster$N_etrs89)), main=c("Average total biomass 2049-2059", "log(amount/m^3)"))
+```
+```{r}
+totbio=p.wq$Ef+p.vq$Ef
+totbio.fut=p.wq.fut$Ef+p.vq.fut$Ef
+par(mfrow=c(1,2))
+hist(totbio)
+hist(totbio.fut)
+# sum(totbio.fut) == sum(totbio.fut) = 3.793988e+15
+```
+The total biomass is of order 10e+15, while the differences in larvae log-density estimations between the past and the future decreases of maximum 20 units, hence they result not relevant. When computing the total biomass, we see no evidence of changes, due to temperature or salinity modification. 
+
+\newpage
+
+### Joint species distribution model
+Interactions among species are usually really relevant in estimating species distributions models. We implement a hierarchical joint species distribution model that attributes variation in species
+occurrence and co-occurrence to the influences of environmental variables and species-to-species associations, as done in r - package Hmsc implementation.
+
+Assuming our response variable $Y$ has a Poisson distribution, with rate parameter (expected value) $\mu_i$, with $i=1,\dots,n$ observation index, given $V_i$ the offset variable, a simple abboundance HSDM has the following form:
+$$\log(\frac{\mu_{i}}{V_i}) = x_i^T\beta + \phi(s_i)$$
+where $\phi(s_i)$ is the random spatial effect.
+
+A JSDM, given the species index $j=1,2$, at location s, will be
+$$\log(\frac{\mu_{ij}}{V_{ij}}) = x_{ij}^T\beta_j + \phi(s)_{ij}$$
+where $\phi_{ij}$ models variation in species occurrence and co-occurrences.
+Prior distributions for the latent varaiable's parameters remain the same as in the one-SDM. We assume that the random effect $\phi_{ij}$  has a GP prior 
+$\phi_{i}\sim N(0, \Omega_\phi)$ where $\Omega_\phi$ is a species-to-species variance–covariance matrix, following a separable model, that is
+$$\Sigma_\phi = R \otimes T$$
+where $R$ is a $n\times N$ matrix whose elements account $\rho(s_i,s_j)$ for saptial correlation among sites $s_i$ and $s_j$, following e.g. a Matern covariance function, whose parameters priors are the same as in SSDMs. While $T$ is a $2\times 2$ matrix that account for correlations amng the two species, for wich we assume the prior
+$$T\sim IW(2, diag(0.001,0.001))$$
+The symbol $\otimes$ stands for the Kronecker product, that in our case, gives:
+$$(R\otimes T)_{ij} = r_{\lfloor{(i-1)/2}\rfloor+1, \lfloor{(j-1)/2}\rfloor+1} t_{(i-1)\%2+1, (j-1)\%2+1}$$
+
+
+
+We now implement the JSDM
+```{r}
+GP_JSDM = "
+  functions{
+  matrix Kron.prod(matrix    R, matrix T, data int N) {
+    matrix[2*N,2*N] kron;
+    int m;
+    int n;
+    int p;
+    int q;
+    
+    for( i in 1:2*N){
+      for(j in 1:2*N) {
+        m = ((i-1)/2)+1; //implicit floor
+        n = ((j-1)/2)+1;
+        p = (i-1)%N+1;
+        q = (j-1)%N+1;
+        kron[i,j] = R[m,n] * T[p,q];
+      }
+    }
+    return kron;
+  }
+  
+  }
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[2*N,Dx] x;
+    int<lower=1> Ds;
+    matrix[2*N,Ds] s;
+    int<lower=0> y[2*N];
+    vector[2*N] V;
+  }
+  transformed data {
+    vector[2*N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[2*N, 2*N] Sigma_lin;
+    real s2_lin;
+    matrix[2,2] Sigma_T;
+
+    Sigma_T = diag_matrix( rep_vector(0.001,2));
+    s2_lin = 10;
+    for (i in 1:2*N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(2*N-1)) {
+      for (j in (i+1):2*N) {
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:2*N){
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+    
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+      } 
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    vector[2*N] z;
+    matrix[2,2] T;
+  }
+  transformed parameters {
+    matrix[2*N, 2*N] Sigma_phi;
+    matrix[2*N, 2*N] Sigma;
+    matrix[2*N, 2*N] L;
+    real<lower=0> inv_l;
+
+
+    inv_l = inv(l);
+    Sigma_phi = Kron.prod(s2_matern*exp(-inv_l*Dist_spatial ) , T, N) ; // Exponential   
+   //   Sigma_phi = Kron.prod(s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial) , T, N) ;  //Matern
+   Sigma = Sigma_phi + Sigma_lin;
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[2*N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l
+    l ~ gamma(7, 0.1);
+      
+    // A weakly informative prior for T
+    T ~ inv_wishart(2, Sigma_T  );
+  
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:2*N)
+      y[n] ~ poisson(V[n]*exp(ff[n]));
+    
+  }
+  generated quantities {
+    vector[2*N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+```
+
+Kroneker product out of the function
+```{r}
+GP_JSDM0 = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[2*N,Dx] x;
+    int<lower=1> Ds;
+    matrix[2*N,Ds] s;
+    int<lower=0> y[2*N];
+    vector[2*N] V;
+  }
+  transformed data {
+    vector[2*N] mu;
+    matrix[N, N] Dist_spatial;
+    matrix[2*N, 2*N] Sigma_lin;
+    real s2_lin;
+    matrix[2,2] Sigma_T;
+
+    Sigma_T = diag_matrix( rep_vector(1,2));
+    s2_lin = 10;
+    for (i in 1:2*N)
+      mu[i] = 0;
+    // off-diagonal elements
+    for (i in 1:(2*N-1)) {
+      for (j in (i+1):2*N) {
+        Sigma_lin[i, j] = s2_lin * dot_product(x[i],x[j]);     // linear covariance function
+        
+        // Fill in the other half
+        Sigma_lin[j, i] = Sigma_lin[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:2*N){
+      Sigma_lin[k, k] = s2_lin * dot_product(x[k],x[k]) + 1e-6;   // add also some jitter
+    }
+    
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+      } 
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    real<lower=0> r;
+    vector[2*N] z;
+    matrix[2,2] T;
+  }
+  transformed parameters {
+    matrix[2*N, 2*N] Sigma_phi;
+    matrix[2*N, 2*N] Sigma;
+    matrix[2*N, 2*N] L;
+    real<lower=0> inv_l;
+
+    matrix[N,N] R;
+
+    
+    inv_l = inv(l);
+
+    R =s2_matern*exp(-inv_l*Dist_spatial );  // Exponential 
+    //   R=s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial) ;  //Matern
+
+    for( i in 1:(2*N-1)){
+      for(j in (i+1):2*N) {
+        Sigma_phi[i,j] = R[((i-1)/2)+1,((j-1)/2)+1] * T[(i-1)%2+1,(j-1)%2+1];   //implicit floor
+         // Fill in the other half
+        Sigma_phi[j, i] = Sigma_phi[i, j];
+      }
+    }
+    // diagonal elements
+    for (k in 1:2*N){
+      Sigma_phi[k, k] = R[((k-1)/2)+1,((k-1)/2)+1] * T[(k-1)%2+1,(k-1)%2+1] + 1e-6;   // add also some jitter
+    }
+
+    Sigma = Sigma_phi + Sigma_lin;
+    L = cholesky_decompose(Sigma);
+  }
+  model {
+    vector[2*N] ff;
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ gamma(3, 0.2);
+  
+    // A weakly informative prior for l
+    l ~ gamma(2, 3);
+    
+    // A weakly informative prior for l
+    r ~ gamma(2, 10);
+      
+    // A weakly informative prior for T
+    T ~ inv_wishart(3, Sigma_T  );
+  
+    z ~ normal(0, 1);
+    ff = L*z;
+  
+    for (n in 1:2*N)
+      y[n] ~ neg_binomial_2(V[n]*exp(ff[n]), r);
+    
+  }
+  generated quantities {
+    vector[2*N] f;
+    // derived quantity (transform)
+    f = L*z;
+  }"
+```
+
+  In the previous model we use the choleski decomposition of the covariance matrix: $\Sigma_\phi= LL^T$, to recover the latent variable $f=L z$, where $z\sim N(0,1)$. 
+  We reimplement the model using the directly linear weight estimations, so that $\mu_f = X\beta$. 
+```{r}
+GP_JSDM1 = "
+  functions{
+  matrix Kron.prod(matrix R, matrix T, data int N) {
+    matrix[2*N,2*N] kron;
+    int m;  
+    int n;
+    int p;
+    int q;
+    
+    for( i in 1:2*N){
+      for(j in 1:2*N) {
+        m = ((i-1)/2)+1; //implicit floor
+        n = ((j-1)/2)+1;
+        p = (i-1)%N+1;
+        q = (j-1)%N+1;
+        kron[i,j] = R[m,n] * T[p,q];
+      }
+    }
+    return kron;
+  }
+  
+  }
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[2*N,Dx] x;
+    int<lower=1> Ds;
+    matrix[2*N,Ds] s;
+    int<lower=0> y[2*N];
+    vector[2*N] V;
+  }
+  transformed data {    
+    matrix[N, N] Dist_spatial;
+    real s2_lin;
+    matrix[2,2] Sigma_T;
+
+    Sigma_T = diag_matrix( rep_vector(0.001,2));
+    s2_lin = 10;
+    
+    
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+      } 
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    matrix[2,2] T;
+    vector[Dx] b;
+    vector[2*N] f;
+
+  }
+  transformed parameters {
+    matrix[2*N, 2*N] Sigma_phi;
+    real<lower=0> inv_l;
+    vector[2*N] mu;
+    
+
+    inv_l = inv(l);
+    Sigma_phi = Kron.prod(s2_matern*exp(-inv_l*Dist_spatial ) , T, N) ; // Exponential   
+   //   Sigma_phi = Kron.prod(s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial) , T, N) ;  //Matern
+    for(n in 1:2*N) {
+      mu[n  ] =   dot_product(  x[n,], b) ; 
+      Sigma_phi[n,n] = Sigma_phi[n,n] + 1e-6; //jiitter
+    }
+  }
+  model {
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ student_t(4, 0, 1);
+  
+    // A weakly informative prior for l
+    l ~ gamma(7, 0.1);
+      
+    // A weakly informative prior for T
+    T ~ inv_wishart(2, Sigma_T  );
+  
+    f ~ multi_normal(mu, Sigma_phi);
+  
+    for (n in 1:2*N)
+      y[n] ~ poisson(V[n]*exp(f[n]));
+    
+  }
+"
+```
+  
+Problems with the kronecker product function again, put it in the transformed par block
+```{r}
+GP_JSDM2 = "
+  data {
+    int<lower=1> N;
+    int<lower=1> Dx;
+    matrix[2*N,Dx] x;
+    int<lower=1> Ds;
+    matrix[2*N,Ds] s;
+    int<lower=0> y[2*N];
+    vector[2*N] V;
+  }
+  transformed data {
+    matrix[N, N] Dist_spatial;
+    real s2_lin;
+    matrix[2,2] Sigma_T;
+
+    Sigma_T = diag_matrix( rep_vector(1 ,2));
+    s2_lin = 10;
+    
+    
+    for (i in 1:(N-1)) {
+      for (j in (i+1):N) {
+        Dist_spatial[i, j] = pow(dot_self(s[i] - s[j]),0.5)  ;    
+
+        // Fill in the other half
+        Dist_spatial[j, i] = Dist_spatial[i, j];
+      } 
+    }
+    // diagonal elements
+    for (k in 1:N){
+      Dist_spatial[k, k] = 0;
+    }
+  }
+  parameters {
+    real<lower=0> l;
+    real<lower=0> s2_matern;
+    real<lower=0> r;
+    matrix[2,2] T;
+    vector[Dx] b;
+    vector[2*N] f;
+
+  }
+  transformed parameters {
+    matrix[2*N, 2*N] Sigma_phi;
+    real<lower=0> inv_l;
+    vector[2*N] mu;
+    matrix[N,N] R;
+
+    
+    inv_l = inv(l);
+
+    R =s2_matern*exp(-inv_l*Dist_spatial );  // Exponential 
+    //   R=s2_matern*(1 + pow(3,0.5)*inv_l*Dist_spatial).*exp(-pow(3,0.5)*inv_l*Dist_spatial) ;  //Matern
+
+    for( i in 1:2*N){
+      for(j in 1:2*N) {
+        Sigma_phi[i,j] = R[((i-1)/2)+1,((j-1)/2)+1] * T[(i-1)%2+1,(j-1)%2+1];   //implicit floor
+      }
+    }
+
+    for(n in 1:2*N) {
+      mu[n] =   dot_product(  x[n,], b) ; 
+      Sigma_phi[n,n] = Sigma_phi[n,n] + 1e-6; //jiitter
+    }
+  }
+  model {
+    
+    // A weakly informative prior for magnitude
+    s2_matern ~ gamma(3, 0.3);
+  
+    // A weakly informative prior for l
+    l ~ gamma(2, 3);
+    
+    // A weakly informative prior for r
+    r ~ gamma(2, 10);
+      
+    // A weakly informative prior for T
+    T ~ inv_wishart(2, Sigma_T    );
+  
+    f ~ multi_normal(mu, Sigma_phi);
+  
+    for (n in 1:2*N)
+      y[n] ~ neg_binomial_2(V[n]*exp(f[n]), r);
+    
+    
+  }
+"
+```
+
+```{r}
+#y.ven = whitefish.dat$VENSUM[-vol0]
+load("finalData")
+randrow=seq(1,length(y),length.out = 200)
+jsdm_data <-  list(Dx = ncol(x),
+                      N = nrow(x),
+                      Ds = ncol(s),
+                      x = rbind(x,x), #same covariates
+                      s = rbind(s,s),
+                      y = c(y,y.v),
+                      V = c(V,V))
+jsdm_data_small <-  list(Dx = ncol(x),
+                   N = nrow(x[randrow,]),
+                   Ds = ncol(s[randrow,]),
+                   x = rbind(x[randrow,],x[randrow,]), #same covariates
+                   s = rbind(s[randrow,],s[randrow,]),
+                   y = c(y[randrow],y.v[randrow]),
+                   V = c(V[randrow],V[randrow]))
+                   
+fit.j = stan(model_code =  GP_JSDM0, data = jsdm_data_small, warmup=200, iter = 500, chains = 1, 
+           #    init=list( list(f=as.vector(rep(0,nrow(x))), l=1, s2_matern=1)) ,
+           control = list(adapt_delta = 0.99), pars=c("f", "s2_matern", "l", "r")  )
+m.j = as.matrix(fit.j)
+
+
+#print(fit.j)              # Rhat
+summary(fit.j, pars = c("s2_matern", "l", "r"))            # summary
+stan_trace(fit.j, pars = c("s2_matern", "l", "r"))         # traceplot
+stan_ac(fit.j,inc_warmup = FALSE, lags = 25, pars = c("s2_matern", "l", "r"))   # autocorrelation between Markov chain samples
+quietgg(stan_hist(fit.j, pars = c("s2_matern", "l", "r")))   # posterior density 
+# scatter plot of parameters of spatial random effect
+stan_scat(fit.j, pars = c("l", "s2_matern"), color = "black", size = 3)
+```
+
+```{r}
+p.j= prediction(m.j, expCovariance, rbind(x,x), xpred , rbind(s,s), spred)
+```
+
+\newpage
+### Bottom type
+Now we consider the bottom coverage type, stored in the categorical variable which were excluded from the model covariates. Each site was classified to 5 BOTTOMCOV and seven BOTTOM types as follows:  
+
+    1 = pehmeä (mud),
+    2 = hiesu (silt),
+    3 = hiekka (sand),
+    4 = hiekka/kivi (Sa/st),
+    5 = kivi nyrkki (Stones),
+    6 = kivi lohkare (Rocks),
+    7 = kallio (Cliff).
+We will further classify each site  with COVERAGE: 0 = clear and 1 = covered with vegetation and use such variables in order to study whether there is difference in the probability of presence of white fish and vendace in clear and vegetated areas. Moreover, we want to compare the differences between different bottom types. Indeed former studies suggests that the survival of white fish larvae is decreased by algal or other bottom vegetation which have been increasing throughout Finnish and Swedish coastal region due to eutrophication. 
+
+    
+Let's denote by $\theta_{b,c}$ the fraction of locations where white fish larvae are present out of all locations with bottom type $b\in\{1,\dots,7\}$ and coverage $c=\{0,1\}$ throughout the study region. Let's assume that there is no prior information on $\theta_{b,c}$ so that their prior is uniform between 0 and 1. Let's also assume that the parameters $\theta_{b,c}$ are mutually independent.
+
+
+First we select the data of interest in order to analyse how the bottom coverage affects white fishes pawns. The variables of interest are  
+
+   * BOTTOM (bottom class, exclude class 0 from data), 
+   * BOTTOMCOV, a classification of vegetation cover: exclude 0 and after that classify as clear all the sites where BOTTOMCOV < 5 and covered all the sites where BOTTOMCOV = 5 
+   * WHIBIN (presence of the white fish)
+   
+```{r}
+library(readxl)
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+data.full = read_xlsx("bsg653_3.xlsx")
+data = data.full[, c( "WHIBIN", "BOTTOMCOV", "BOTTOM")]
+data = data[data$BOTTOM!=0,]
+# 0 : clear
+# 1 : covered
+data$BOTTOMCOV = ifelse(data$BOTTOMCOV == 5, 1, 0)
+
+# write.table(data, file="white_fishes_data.txt", row.names=FALSE, col.names=TRUE)
+
+```
+   
+
+
+ We want to model the fraction of locations where white fish larvae are present out of all locations with bottom type $b\in\{1,\dots,7\}$ and coverage $c=\{0,1\}$. 
+ The posterior of interest is  $\theta_{b,c} \sim Beta(y_{b,c}+1, \ N_{b,c}-y_{b,c}+1)$ for all the possible combinations of $b$ and $c$.  
+ 
+ Let's have a look at the data, and store the variables $y_{b,c}$, $N_{b,c}$ in two arrays
+ 
+```{r}
+table(data)
+y = table(data$BOTTOM[data$WHIBIN ==1], data$BOTTOMCOV[data$WHIBIN ==1])
+N = table(data$BOTTOM, data$BOTTOMCOV)
+
+```
+ Now we sample from the posterior distributions of $\theta_{b,c} \ \forall b,c$ :
+ 
+```{r}
+set.seed(123)
+theta =  array(rep(NA, 7*2*1000), dim=c(7, 2, 1000))
+for (i in 1:7) {
+   for (j in 1:2) {
+      theta[i,j,] = rbeta(1000, y[i,j]+1, N[i,j]-y[i,j]+1)
+   }
+}
+
+```
+Observe the following plot.  
+The different coastal types are coded as follows:  
+
+   1 = mud  
+   2 = silt  
+   3 = sand  
+   4 = Sa/st  
+   5 = Stones  
+   6 = Rocks  
+   7 = Cliff  
+
+```{r}
+theta.df = data.frame(
+ "mud0" = theta[1,1,],"mud" = theta[1,2,],
+ "silt0" = theta[2,1,],"silt" = theta[2,2,],
+ "sand0"= theta[3,1,], "sand"= theta[3,2,],
+ "Sa/st0"= theta[4,1,], "Sa/st"= theta[4,2,],
+"Stones0"= theta[5,1,],"Stones"= theta[5,2,],
+ "Rocks0"= theta[6,1,],"Rocks"= theta[6,2,],
+"Cliff0"= theta[7,1,],"Cliff"= theta[7,2,]
+)
+
+boxplot(theta.df, col= 4:3 , las =2, ylab= "theta", main ="Posterior of theta.bc")
+legend("bottomleft", legend = c("uncovered", "covered"), col=4:3, pch = 16,bty = "n")
+
+```
+
+We now compute the probability that $\theta_{b,1}>\theta_{b,0}$ for all bottom classes $b\in\{1,\dots,7\}$.
+```{r}
+# Probabilities per costal type
+pr = c()
+for (i in 1:7) {
+   pr[i] = sum(theta[i,2,]>theta[i,1,])/length(theta[i,1,])
+}
+names(pr) = 1:7
+pr
+```
+ 
+
+
+  

@@ -1,0 +1,117 @@
+---
+title: "Effect of bottom coverage to larval presence"
+output: pdf_document
+---
+
+White fish is a fresh water origin fish species that is found also from the northern parts of the brackish water Gulf of Bothnia.   
+White fish are caught and sold for human consumption and, hence, they are economically important for local fishermen. 
+It spawns in shallow coastal areas and former studies suggests that the survival of white fish larvae is decreased by algal or other bottom vegetation which have been increasing throughout Finnish and Swedish coastal region due to eutrophication. 
+Hence, we want to study whether there is difference in the probability of presence of white fish and vendace in clear and vegetated areas. 
+Moreover, we want to compare the differences between different bottom types.
+
+A number of sites along the Finnish and Swedish coastal region in the Gulf of Bothnia were sampled during 2009-2011. Each site was classified to six BOTTOM types as follows:  
+
+    1 = pehmeä (mud),
+    2 = hiesu (silt),
+    3 = hiekka (sand),
+    4 = hiekka/kivi (Sa/st),
+    5 = kivi nyrkki (Stones),
+    6 = kivi lohkare (Rocks),
+    7 = kallio (Cliff).
+Each site was further classified  with COVERAGE: 0 = clear and 1 = covered with vegetation.   
+
+
+Let's denote by $\theta_{b,c}$ the fraction of locations where white fish larvae are present out of all locations with bottom type $b\in\{1,\dots,7\}$ and coverage $c=\{0,1\}$ throughout the study region. Let's assume that there is no prior information on $\theta_{b,c}$ so that their prior is uniform between 0 and 1. Let's also assume that the parameters $\theta_{b,c}$ are mutually independent. We will calculate the posterior distribution for each $\theta_{b,c}$ and the probability that $\theta_{b,1}>\theta_{b,0}$ for all bottom classes $b\in\{1,\dots,7\}$.
+
+
+
+
+First we construct the data file from the excell original dataset. The excell columns of interest are  
+
+   * BOTTOM (bottom class, exclude class 0 from data), 
+   * BOTTOMCOV, a classification of vegetation cover: exclude 0 and after that classify as clear all the sites where BOTTOMCOV < 5 and covered all the sites where BOTTOMCOV = 5 
+   * WHIBIN (presence of the white fish)
+   
+```{r}
+library(readxl)
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+data.full = read_xlsx("bsg653_3.xlsx")
+data = data.full[, c( "WHIBIN", "BOTTOMCOV", "BOTTOM")]
+data = data[data$BOTTOM!=0,]
+# 0 : clear
+# 1 : covered
+data$BOTTOMCOV = ifelse(data$BOTTOMCOV == 5, 1, 0)
+
+# write.table(data, file="white_fishes_data.txt", row.names=FALSE, col.names=TRUE)
+
+```
+   
+
+
+ We want to model the fraction of locations where white fish larvae are present out of all locations with bottom type $b\in\{1,\dots,7\}$ and coverage $c=\{0,1\}$. 
+ The posterior of interest is  $\theta_{b,c} \sim Beta(y_{b,c}+1, \ N_{b,c}-y_{b,c}+1)$ for all the possible combinations of $b$ and $c$.  
+ 
+ Let's have a look at the data, and store the variables $y_{b,c}$, $N_{b,c}$ in two arrays
+ 
+```{r}
+table(data)
+y = table(data$BOTTOM[data$WHIBIN ==1], data$BOTTOMCOV[data$WHIBIN ==1])
+N = table(data$BOTTOM, data$BOTTOMCOV)
+
+```
+ Now we sample from the posterior distributions of $\theta_{b,c} \ \forall b,c$ :
+ 
+```{r}
+set.seed(123)
+theta =  array(rep(NA, 7*2*1000), dim=c(7, 2, 1000))
+for (i in 1:7) {
+   for (j in 1:2) {
+      theta[i,j,] = rbeta(1000, y[i,j]+1, N[i,j]-y[i,j]+1)
+   }
+}
+
+```
+Observe the following plot.  
+The different costal types are coded as followos:  
+
+   1 = mud  
+   2 = silt  
+   3 = sand  
+   4 = Sa/st  
+   5 = Stones  
+   6 = Rocks  
+   7 = Cliff  
+
+```{r}
+theta.df = data.frame(
+ "mud0" = theta[1,1,],"mud" = theta[1,2,],
+ "silt0" = theta[2,1,],"silt" = theta[2,2,],
+ "sand0"= theta[3,1,], "sand"= theta[3,2,],
+ "Sa/st0"= theta[4,1,], "Sa/st"= theta[4,2,],
+"Stones0"= theta[5,1,],"Stones"= theta[5,2,],
+ "Rocks0"= theta[6,1,],"Rocks"= theta[6,2,],
+"Cliff0"= theta[7,1,],"Cliff"= theta[7,2,]
+)
+
+boxplot(theta.df, col= 4:3 , las =2, ylab= "theta", main ="Posterior of theta.bc")
+legend("bottomleft", legend = c("uncovered", "covered"), col=4:3, pch = 16,bty = "n")
+
+
+```
+
+We now compute the probability that $\theta_{b,1}>\theta_{b,0}$ for all bottom classes $b\in\{1,\dots,7\}$.
+```{r}
+# Probabilities per costal type
+pr = c()
+for (i in 1:7) {
+   pr[i] = sum(theta[i,2,]>theta[i,1,])/length(theta[i,1,])
+}
+names(pr) = 1:7
+pr
+```
+ 
+
+
+## References
+
+Lari Veneranta, Richard Hudd and Jarno Vanhatalo (2013). Reproduction areas of sea-spawning Coregonids reflect the environment in shallow coastal waters. Marine Ecology Progress Series, 477:231-250. <http://www.int-res.com/abstracts/meps/v477/p231-250/>

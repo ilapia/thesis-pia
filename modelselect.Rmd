@@ -1,0 +1,163 @@
+---
+title: "model selection"
+author: "Ilaria Pia"
+date: "04/07/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("rstan")
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+
+library("raster")
+library(Rcpp)
+library(readxl)
+
+source("functions.R")
+sourceCpp("expCovariance.cpp")
+
+load("finalTestTrainData")
+load("finalDataPred")
+```
+
+## load data and models
+### data
+Load files
+```{r}
+setwd("/home/piailari/Documents/thesis")
+
+library("rstan")
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+
+library("raster")
+library(Rcpp)
+library(readxl)
+
+sourceCpp("Matern32Covariance.cpp")
+sourceCpp("expCovariance.cpp")
+  
+linearCovariance <- function(x1,x2,sigma2) {
+  # K = exponentialCovariance(x1,x2,l,sigma2)
+  # 
+  # A function that takes matrices x1 and x2 of input locations, lengthscale
+  # parameter l and magnitude parameter sigma2 and constructs a covariance
+  # matrix between f(x1) and f(x2) corresponding to an exponential covariance
+  # function. 
+  
+  K = as.matrix(x1)%*%diag(sigma2)%*%t(as.matrix(x2))
+  return(K)
+}
+
+# Load the data
+whitefish.dat.cov = read.table("white_fishes_final.txt", header=TRUE)
+whitefish.raster = read.table("white_fishes_final_raster.txt", header=TRUE)
+# full data, to get target variable
+setwd("/home/piailari/Documents/BayesianDataAnalysis/exercises/week3/exercise2b")
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+
+
+```
+
+#### 2. 1 train every 3 obs
+```{r}
+load("finalData")
+load("finalDataPred")
+
+# Test with smaller data first
+# training
+n=nrow(x)
+mn=round(n/3)
+train.rows=seq(1,n,length=mn)
+x1 = x[train.rows,]
+x.q1 = x.q[train.rows,]
+s1 = s[train.rows,]
+y1 = y[train.rows]
+y.v1 = y.v[train.rows]
+V1 = V[train.rows]
+# test
+x2 = x[-train.rows,]
+x.q2 = x.q[-train.rows,]
+s2 = s[-train.rows,]
+y2 = y[-train.rows]
+y.v2 = y.v[-train.rows]
+V2 = V[-train.rows]
+```
+
+### model fits
+```{r}
+wf1.g=readRDS("fit_wf1_gamma.rds")
+#p.wf1.g=readRDS( "pred_wf1_gamma.RData")
+wf2.g=readRDS("fit_wf2_gamma.rds")
+#p.wf2.g=readRDS( "pred_wf2_gamma.RData")
+wf1.t=readRDS("fit_wf1_stud.rds")
+#p.wf1.t=readRDS( "pred_wf1_stud.RData")
+wf2.t=readRDS("fit_wf2_stud.rds")
+#p.wf2.t=readRDS( "pred_wf2_stud.RData")
+
+ve1.g=readRDS("fit_ve1_gamma.rds")
+#p.ve1.g=readRDS( "pred_ve1_gamma.RData")
+ve2.g=readRDS("fit_ve2_gamma.rds")
+#p.ve2.g=readRDS( "pred_ve2_gamma.RData")
+ve1.t=readRDS("fit_ve1_stud.rds")
+#p.ve1.t=readRDS( "pred_ve1_stud.RData")
+ve2.t=readRDS("fit_ve2_stud.rds")
+#p.ve2.t=readRDS( "pred_ve2_stud.RData")
+```
+
+### CV
+
+  
+## validate 
+whitefish : student t 1
+```{r}
+kv.wf1.g=  validate(wf1.g, y2,V2,x2,s2,x1,s1)  
+kv.wf1.t=  validate(wf1.t, y2,V2,x2,s2,x1,s1)  
+kv.wf2.g=  validate(wf2.g, y2,V2,x.q2,s2,x.q1,s1)  
+kv.wf2.t=  validate(wf1.t, y2,V2,x.q2,s2,x.q1,s1) 
+
+  wfval=data.frame(Model=c("wf1 gamma", "wf2 gamma", "wf1 stud", "wf2 stud"), logdens=c(kv.wf1.g , kv.wf2.g, kv.wf1.t, kv.wf2.t))
+wfval
+```
+  
+Vendace : gamma1
+```{r}
+kv.ve1.g=  validate(ve1.g, y.v2,V2,x2,s2,x1,s1)  
+kv.ve1.t=  validate(ve1.t, y.v2,V2,x2,s2,x1,s1)  
+kv.ve2.g=  validate(ve2.g, y.v2,V2,x.q2,s2,x.q1,s1)  
+kv.ve2.t=  validate(ve1.t, y.v2,V2,x.q2,s2,x.q1,s1)  
+
+veval=data.frame(Model=c("ve1 gamma", "ve2 gamma", "ve1 stud", "ve2 stud"), logdens=c(kv.ve1.g , kv.ve2.g, kv.ve1.t, kv.ve2.t))
+veval
+```
+
+
+## k fold cv
+on a subset of the total data
+```{r}
+y.w1=y1
+#wf 1degree poly
+data = data.frame(y=y.w1, x1,V=V1,s1=s1[,1], s2=s1[,2])
+Kfoldcv.wf1.g = cv1(data, GP_whitefishmodel_gamma) #  
+Kfoldcv.wf1.t = cv1(data, GP_whitefishmodel_stud) # 
+
+#wf 2degree poly
+data = data.frame(y=y.w1, x.q1,V=V1,s1=s1[,1], s2=s1[,2])
+Kfoldcv.wf2.g =cv1(data, GP_whitefishmodel_gamma)  #    
+Kfoldcv.wf2.t =cv1(data, GP_whitefishmodel_stud)  #    
+
+#ve 1degree poly
+data = data.frame(y=y.v1, x1,V=V1,s1=s1[,1], s2=s1[,2])
+Kfoldcv.wf1.g = cv1(data, GP_whitefishmodel_gamma) #  
+Kfoldcv.wf1.t = cv1(data, GP_whitefishmodel_stud) # 
+
+#ve 2degree poly
+data = data.frame(y=y.v1, x.q1,V=V1,s1=s1[,1], s2=s1[,2])
+Kfoldcv.wf2.g =cv1(data, GP_whitefishmodel_gamma)  #    
+Kfoldcv.wf2.t =cv1(data, GP_whitefishmodel_stud)  #    
+
+```

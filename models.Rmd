@@ -1,0 +1,330 @@
+---
+title: "Models fitting"
+author: "Ilaria Pia"
+date: "09/07/2020"
+output: pdf_document  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("rstan")
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+
+library("raster")
+library(Rcpp)
+library(readxl)
+
+source("functions.R")
+sourceCpp("expCovariance.cpp")
+
+load("finalTestTrainData")
+load("finalDataPred")
+
+```
+
+## Models
+
+Gamma prior for l
+```{r,eval=FALSE}
+#Whitefish 
+wf1.g=model(x1,s1,y1,V1,save = T,model.code = GP_whitefishmodel_gamma,
+          model.name = "fit_wf1_gamma.rds", pred.name = "pred_wf1_gamma.RData")
+wf2.g=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_gamma,
+          model.name = "fit_wf2_gamma.rds", pred.name = "pred_wf2_gamma.RData")
+  
+#Vendace
+ve1.g=model(x1,s1,y.v1,V1, save = T, model.code = GP_whitefishmodel_gamma,
+          model.name = "fit_ve1_gamma.rds", pred.name = "pred_ve1_gamma.RData")
+ve2.g=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_gamma,
+          model.name = "fit_ve2_gamma.rds", pred.name = "pred_ve2_gamma.RData")
+```
+
+t-student prior for 1/l
+```{r, eval=FALSE}
+#Whitefish 
+wf1.t=model(x1,s1,y1,V1,save = T,model.code = GP_whitefishmodel_stud,
+          model.name = "fit_wf1_stud.rds", pred.name = "pred_wf1_stud.RData")
+wf2.t=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_stud,
+          model.name = "fit_wf2_stud.rds", pred.name = "pred_wf2_stud.RData")
+
+#Vendace
+ve1.t=model(x1,s1,y.v1,V1, save = T, model.code = GP_whitefishmodel_stud,
+          model.name = "fit_ve1_stud.rds", pred.name = "pred_ve1_stud.RData")
+ve2.t=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_stud,
+          model.name = "fit_ve2_stud.rds", pred.name = "pred_ve2_stud.RData")
+```
+
+### Study results
+```{r}
+wf1.g=readRDS("fit_wf1_gamma.rds")
+#p.wf1.g=readRDS( "pred_wf1_gamma.RData")
+wf2.g=readRDS("fit_wf2_gamma.rds")
+#p.wf2.g=readRDS( "pred_wf2_gamma.RData")
+wf1.t=readRDS("fit_wf1_stud.rds")
+#p.wf1.t=readRDS( "pred_wf1_stud.RData")
+wf2.t=readRDS("fit_wf2_stud.rds")
+#p.wf2.t=readRDS( "pred_wf2_stud.RData")
+
+ve1.g=readRDS("fit_ve1_gamma.rds")
+#p.ve1.g=readRDS( "pred_ve1_gamma.RData")
+ve2.g=readRDS("fit_ve2_gamma.rds")
+#p.ve2.g=readRDS( "pred_ve2_gamma.RData")
+ve1.t=readRDS("fit_ve1_stud.rds")
+#p.ve1.t=readRDS( "pred_ve1_stud.RData")
+ve2.t=readRDS("fit_ve2_stud.rds")
+#p.ve2.t=readRDS( "pred_ve2_stud.RData")
+```
+
+Whitefish, 1order , $l\sim Gamma(10,1)$
+```{r}
+m=posterior.check(wf1.g)
+
+# train
+ptrain=prediction(m, expCovariance, x1,x1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x1,x2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x1,xpred,s1,spred )
+saveRDS(p,"pred_wf2_gamma.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+Whitefish, 1order , $1/l\sim t-student_4$
+```{r}
+m=posterior.check(wf1.t)
+
+# train
+ptrain=prediction(m, expCovariance, x1,x1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x1,x2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x1,xpred,s1,spred )
+saveRDS(p,"pred_wf2_stud.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+Vendace, 1order , $l\sim Gamma(10,1)$
+```{r}
+m=posterior.check(ve1.g)
+
+# train
+ptrain=prediction(m, expCovariance, x1,x1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y.v1==0, 0.1,y.v1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x1,x2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y.v2==0, 0.1,y.v2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y.v2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x1,xpred,s1,spred )
+saveRDS(p, "pred_ve2_gamma.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+
+Vendace, 1order , $1/l\sim t-student_4$
+```{r}
+m=posterior.check(ve1.t)
+
+# train
+ptrain=prediction(m, expCovariance, x1,x1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x1,x2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y.v2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y.v2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x1,xpred,s1,spred )
+saveRDS(p, "pred_ve2_stud.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+
+
+Whitefish, 2order , $l\sim Gamma(10,1)$
+```{r}
+m=posterior.check(wf2.g)
+
+# train
+ptrain=prediction(m, expCovariance, x.q1,x.q1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x.q1,x.q2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x.q1,xpred.q,s1,spred )
+saveRDS(p,"pred_wf2_gamma.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+Whitefish, 2order , $1/l\sim t-student_4$
+```{r}
+m=posterior.check(wf2.t)
+
+# train
+ptrain=prediction(m, expCovariance, x.q1,x.q1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x.q1,x.q2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x.q1,xpred.q,s1,spred )
+saveRDS(p,"pred_wf2_stud.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+Vendace, 2order , $l\sim Gamma(10,1)$
+```{r}
+m=posterior.check(ve2.g)
+
+# train
+ptrain=prediction(m, expCovariance, x.q1,x.q1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y.v1==0, 0.1,y.v1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x.q1,x.q2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y.v2==0, 0.1,y.v2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y.v2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x.q1,xpred.q,s1,spred )
+saveRDS(p, "pred_ve2_gamma.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```
+
+
+Vendace, 2order , $1/l\sim t-student_4$
+```{r}
+m=posterior.check(ve2.t)
+
+# train
+ptrain=prediction(m, expCovariance, x.q1,x.q1,s1,s1 )
+
+raster.plot(ptrain$Ef, "logdensity")
+y00=ifelse(y1==0, 0.1,y1)
+plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
+abline(0,1,col=2)
+
+# test
+ptest=prediction(m, expCovariance, x.q1,x.q2,s1,s2 )
+
+raster.plot(ptest$Ef, "logdensity")
+y00=ifelse(y.v2==0, 0.1,y2)
+plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
+abline(0,1,col=2)
+r=residual(ptest, x.q2, y.v2,V2)
+
+# bigraster
+p=prediction(m, expCovariance, x.q1,xpred.q,s1,spred )
+saveRDS(p, "pred_ve2_stud.RData")
+p$summary_beta
+par(mfrow=c(3,4))
+for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+raster.plot(p$Ef, "logdensity")
+
+```

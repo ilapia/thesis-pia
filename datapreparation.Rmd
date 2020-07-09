@@ -243,3 +243,15 @@ save(x1,x.q1,s1,y1,y.v1,V1,
 ```
 We use the latter
 
+
+
+Raster grid, to plot final predictive maps
+```{r}
+library(raster)
+ee <- extent(s)
+rr <- raster(ee, ncol=length(unique(s[,1])), nrow=length(unique(s[,2])))
+
+save(ee,rr, file="rastergrids")
+
+```
+

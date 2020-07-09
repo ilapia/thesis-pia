@@ -29,7 +29,7 @@ load("finalDataPred")
 
 Whitefish, 1order , $1/l\sim t-student_4$
 ```{r}
-wf1.t2000=readRDS("/home/piailari/Documents/results/fit2000_final_wf.rds")
+wf1.t2000=readRDS("/home/piailari/Documents/thesis-pia/fits/fit_wf_final.rds")
 m=posterior.check(wf1.t2000)
 
 # train
@@ -66,7 +66,7 @@ raster.plot(pf$Ef, "Whitefish future logdensity")
 
 Vendace, 1order , $l\sim gamma$
 ```{r}
-ve1.g2000=readRDS("/home/piailari/Documents/results/fit2000_final_ve.rds")
+ve1.g2000=readRDS("/home/piailari/Documents/thesis-pia/fits/fit_ve_final.rds")
 m=posterior.check(ve1.g2000)
 
 # train

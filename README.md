@@ -2,7 +2,7 @@
 Whitefish and vendace SDMs
  
 In this master’s thesis we apply state-of-the-art statistical species distribution models to predict the likely effects of climate change to whitefish and vendace larvae in
-the Gulf of Bothnia, located inthe northern part of the Baltic Sea.
+the Gulf of Bothnia, located in the northern part of the Baltic Sea.
 
 The repository contains the main code implemented for my master thesis. The files are related to:
 

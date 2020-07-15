@@ -48,6 +48,7 @@ y00=ifelse(y2==0, 0.1,y2)
 plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
 abline(0,1,col=2)
 r=residual(ptest, x2, y2,V2)
+respc(ptest)
 
 # bigraster
  p=prediction(m, expCovariance, x,xpred,s,spred )
@@ -85,6 +86,7 @@ y00=ifelse(y.v2==0, 0.1,y.v2)
 plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
 abline(0,1,col=2)
 r=residual(ptest, x2, y.v2,V2)
+respc(ptest)
 
 # bigraster
  p=prediction(m, expCovariance, x,xpred,s,spred )

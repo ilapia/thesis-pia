@@ -25,6 +25,8 @@ library(readxl)
 sourceCpp("Matern32Covariance.cpp")
 sourceCpp("expCovariance.cpp")
   
+load("finalTestTrainData")
+load("finalDataPred")
 ###
 
 ### functions
@@ -263,3 +265,30 @@ cv1 = function(data, stanmodel, K=5) {
   return(KfoldCV)
 }
 ###
+
+### r{response curve}
+# covariates ranges
+# > apply(x[,8:15],2,"min");apply(x[,8:15],2,"max")
+# [1] -1.0360879 -0.9819702 -3.2550771 -1.6389181 -1.1424918 -2.9078146 -1.8407923 -1.9312393
+# [1] 2.662831 3.075169 1.708342 3.601653 4.047479 1.927289 2.305125 1.982890
+# > apply(xpred[,8:15],2,"min");apply(xpred[,8:15],2,"max")
+# [1] -1.1164992 -0.9819702 -3.2550771 -1.6572790 -1.1424918 -3.8179518 -1.9496938 -2.2903797
+# [1] 3.547355 4.048025 1.708342 4.499599 4.642510 2.042780 2.688552 2.167914
+
+respc= function(pr, XtrainingCont = x1[,8:15], Xminmax = matrix(c(-1.1164992, -0.9819702, -3.2550771, -1.6572790, -1.1424918, -3.8179518, -1.9496938, -2.2903797,
+                                        3.547355, 4.048025, 1.708342, 4.499599, 4.642510, 2.042780, 2.688552, 2.167914), ncol=2)){
+  
+  covariatenames = rownames(pr$summary_beta)[8:15]
+  B1 = as.matrix(pr$betas[8:15,])
+  par(mfrow=c(3,3))
+  boxplot(t(pr$betas[2:7,]), main="Bottom Class")
+  for (i in 1:8){
+    xtemp = as.vector(seq(Xminmax[i,1],Xminmax[i,2],length.out = 100))
+    ftemp = xtemp%*%t(B1[i,])
+    Eftemp = apply(ftemp, 1, "mean")
+    plot(xtemp,Eftemp,type="l",main=covariatenames[i])
+    lines(xtemp,apply(ftemp, 1, "quantile",probs=0.05),lty="dashed")
+    lines(xtemp,apply(ftemp, 1, "quantile",probs=0.95),lty="dashed")
+    points(XtrainingCont[,i],rep(0,nrow(XtrainingCont)), pch=4)
+  }
+}

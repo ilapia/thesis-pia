@@ -12,6 +12,8 @@ The repository contains the main code implemented in the studies. The files are 
 
 * SmartSeaData prep: function used to recover final raster (can't be run directly, since the source data are too big to be uploaded on github )
 
+* dataprep: data preparation, to save the variables used in the models
+
 * functions: all functions implemented and used in the other files
 
 * models: fit of the 8 models reported in the thesis

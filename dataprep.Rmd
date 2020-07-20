@@ -1,0 +1,232 @@
+---
+title: "Models"
+author: "Ilaria Pia"
+date: "29/06/2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### data
+Load files
+```{r}
+
+library("rstan")
+library(matrixStats)
+options(mc.cores = parallel::detectCores())
+
+library("raster")
+library(Rcpp)
+library(readxl)
+
+sourceCpp("Matern32Covariance.cpp")
+sourceCpp("expCovariance.cpp")
+  
+linearCovariance <- function(x1,x2,sigma2) {
+  # K = exponentialCovariance(x1,x2,l,sigma2)
+  # 
+  # A function that takes matrices x1 and x2 of input locations, lengthscale
+  # parameter l and magnitude parameter sigma2 and constructs a covariance
+  # matrix between f(x1) and f(x2) corresponding to an exponential covariance
+  # function. 
+  
+  K = as.matrix(x1)%*%diag(sigma2)%*%t(as.matrix(x2))
+  return(K)
+}
+```
+
+```{r}
+setwd("/home/piailari/Documents/thesis-pia/datafiles")
+
+# Load the data
+whitefish.dat.cov = read.table("white_fishes_final.txt", header=TRUE)
+whitefish.raster = read.table("white_fishes_final_raster.txt", header=TRUE)
+# full data, to get target variable
+whitefish.dat = read_xlsx("bsg653_3.xlsx")
+colnames(whitefish.dat)[15:16]= c("N_etrs89", "E_etrs89")
+
+
+```
+
+First order covariates and target
+```{r}
+# Set up data
+s = as.matrix(cbind(whitefish.dat.cov$E_etrs89, whitefish.dat.cov$N_etrs89)) / 1000   # spatial coordinates in km
+x = matrix(0,nrow=nrow(s),ncol=15)      # intercept + 5 BOTTOMCLS classes + 8 continues covariates
+x[,1] = 1                             # Set the column corresponding to intercept to 1
+x[whitefish.dat$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+x[whitefish.dat$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+x[whitefish.dat$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+x[whitefish.dat$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+x[whitefish.dat$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+x[whitefish.dat$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xcont = as.matrix(cbind(whitefish.dat.cov$DIS_SAND,
+                        whitefish.dat.cov$FE300ME,
+                        whitefish.dat.cov$ICELAST09,
+                        whitefish.dat.cov$RIVERS,
+                        whitefish.dat.cov$DIST20M, 
+                        whitefish.dat.cov$CHL_A,
+                        whitefish.dat.cov$TEMP09M,
+                        whitefish.dat.cov$SALT09M))
+
+# End variable
+y = whitefish.dat$WHISUM               # number of counted fish larvae
+y.v = whitefish.dat$VENSUM               # number of counted fish larvae
+
+par(mfrow=c(1,2))
+hist(y, main ="number of larvae", 50)
+boxplot(y, main ="number of larvae")
+
+# Sampling effort; that is the volume of water sampled
+V = whitefish.dat$VOLUME
+hist(y/V, main ="number of larvae per volume", 50)
+boxplot(y/V, main ="number of larvae per volume")
+
+# 0 volume observations
+vol0 = which(V==0)
+cat(paste(c("Zero volume observations:", vol0)))
+# remove the observations with 0 volume
+y=y[-vol0] 
+y.v=y.v[-vol0] 
+x=x[-vol0,]
+s=s[-vol0,] 
+V=V[-vol0] 
+xcont=xcont[-vol0,]
+
+# remove observations with same locations
+dupli= which(duplicated(s))  #12 obs
+y=y[-dupli] 
+y.v=y.v[-dupli] 
+x=x[-dupli,]
+s=s[-dupli,] 
+V=V[-dupli]
+xcont=xcont[-dupli,]
+
+# "standardize" the continuous covariates
+stdxcont = apply(xcont, 2, sd)
+mxcont = apply(xcont, 2, mean)
+x[,8:15] = t( apply( t(apply(xcont,1,'-',mxcont)),1,'/',stdxcont) )    
+
+# Prediction variables
+spred = as.matrix(cbind(whitefish.raster$E_etrs89,whitefish.raster$N_etrs89)) / 1000  # spatial coordinates in km
+xpred = matrix(0,nrow=nrow(spred),ncol=15)      # intercept + 6 BOTTOMCLS classes + 5 continues covariates
+xpred[,1] = 1                             # Set the column corresponding to intercept to 1
+xpred[whitefish.raster$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+xpred[whitefish.raster$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+xpred[whitefish.raster$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+xpred[whitefish.raster$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+xpred[whitefish.raster$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+xpred[whitefish.raster$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xpredcont = as.matrix(cbind(whitefish.raster$DIS_SAND,
+                            whitefish.raster$FE300ME,
+                            whitefish.raster$ICELAST09,
+                            whitefish.raster$RIVERS,
+                            whitefish.raster$DIST20M,
+                            whitefish.raster$CHL_A, 
+                            whitefish.raster$TEMP09M,
+                            whitefish.raster$SALT09M))
+# standardize
+xpred[,8:15] = t( apply( t(apply(xpredcont,1,'-',mxcont)),1,'/',stdxcont) )    # "standardize" the continuous covariates
+```
+
+
+Quadratic effect
+```{r}
+#square scaled covariates
+x2=apply(x[,8:15], 2, '^',2)
+x.q=cbind(x,x2)
+```  
+
+```{r}
+# Prediction variables
+xpred2=apply(xpred[,8:15], 2, '^',2)
+xpred.q=cbind(xpred,xpred2 )
+```
+
+Future
+
+```{r}
+whitefish.raster.fut = read.table("white_fishes_final_raster_fut.txt", header=TRUE) 
+whitefish.raster.past = read.table("white_fishes_final_raster.txt", header=TRUE) 
+
+# Prediction variables
+spred.fut = as.matrix(cbind(whitefish.raster.fut$E_etrs89,whitefish.raster.fut$N_etrs89)) / 1000  # spatial coordinates in km
+xpred.fut = matrix(0,nrow=nrow(spred.fut),ncol=15)      # intercept + 6 BOTTOMCLS classes + 5 continues covariates
+xpred.fut[,1] = 1                             # Set the column corresponding to intercept to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==0,2] = 1   # Set the elements corresponding to BOTTOMCLS = 0 to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==1,3] = 1   # Set the elements corresponding to BOTTOMCLS = 1 to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==2,4] = 1   # Set the elements corresponding to BOTTOMCLS = 2 to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==3,5] = 1   # Set the elements corresponding to BOTTOMCLS = 3 to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==4,6] = 1   # Set the elements corresponding to BOTTOMCLS = 4 to 1
+xpred.fut[whitefish.raster.fut$BOTTOMCLS==5,7] = 1   # Set the elements corresponding to BOTTOMCLS = 5 to 1
+xpredcont.fut = as.matrix(cbind(whitefish.raster.fut$DIS_SAND,
+                            whitefish.raster.fut$FE300ME,
+                            whitefish.raster.fut$ICELAST_FUT,
+                            whitefish.raster.fut$RIVERS,
+                            whitefish.raster.fut$DIST20M,
+                            whitefish.raster.fut$CHL_A, 
+                            whitefish.raster.fut$TEMP09M_FUT,
+                            whitefish.raster.fut$SALT09M_FUT))
+
+xpred.fut[,8:15] = t( apply( t(apply(xpredcont.fut,1,'-',mxcont)),1,'/',stdxcont) )    # "standardize" the continuous covariates
+
+```
+
+
+
+```{r}
+  covnames=c("intercept" ,  "BOTTOMCLS_0" ,"BOTTOMCLS_1", "BOTTOMCLS_2", "BOTTOMCLS_3" ,"BOTTOMCLS_4" ,"BOTTOMCLS_5", "FE300ME"  ,"DIS_SAND", "ICELAST09" , "RIVERS", "DIST20M" , "CHL_A" ,  "TEMP09M" ,"SALT09M" , "FE300ME^2"  , "DIS_SAND^2" , "ICELAST09^2","RIVERS^2" ,   "DIST20M^2" ,  "CHL_A^2" ,    "TEMP09M^2" ,  "SALT09M^2"  )
+```
+
+```{r}
+ save(x,x.q,V,y,y.v,s, covnames, file="finalData")
+ save(xpred, xpred.q, xpred.fut, spred, spred.fut, file="finalDataPred")
+
+```
+
+#### Train-test 2. 1 every 3 obs
+```{r}
+load("finalData")
+load("finalDataPred")
+
+# Test with smaller data first
+# training
+n=nrow(x)
+mn=round(n/3)
+train.rows=seq(1,n,length=mn)
+x1 = x[train.rows,]
+x.q1 = x.q[train.rows,]
+s1 = s[train.rows,]
+y1 = y[train.rows]
+y.v1 = y.v[train.rows]
+V1 = V[train.rows]
+# test
+x2 = x[-train.rows,]
+x.q2 = x.q[-train.rows,]
+s2 = s[-train.rows,]
+y2 = y[-train.rows]
+y.v2 = y.v[-train.rows]
+V2 = V[-train.rows]
+
+save(x1,x.q1,s1,y1,y.v1,V1,
+     x2,x.q2,s2,y2,y.v2,V2,
+     file ="finalTestTrainData")
+```
+
+Raster grid, to plot final predictive maps
+```{r}
+library(raster)
+ee <- extent(spred)
+rr <- raster(ee, ncol=length(unique(spred[,1])), nrow=length(unique(spred[,2])))
+
+eef <- extent(spred.fut)
+rrf <- raster(eef, ncol=length(unique(spred.fut[,1])), nrow=length(unique(spred.fut[,2])))
+
+save(ee,rr, eef, rrf, file="rastergrids")
+
+```

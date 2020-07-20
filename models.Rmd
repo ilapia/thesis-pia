@@ -21,6 +21,7 @@ sourceCpp("expCovariance.cpp")
 
 load("finalTestTrainData")
 load("finalDataPred")
+load("finalData")
 
 ```
 
@@ -29,31 +30,32 @@ load("finalDataPred")
 Gamma prior for l
 ```{r,eval=FALSE}
 #Whitefish 
-wf1.g=model(x1,s1,y1,V1,save = T,model.code = GP_whitefishmodel_gamma,
+wf1.g=model(x1,s1,y1,V1,save = T,model.file = "GP_whitefishmodel_gamma.stan",
           model.name = "fit_wf1_gamma.rds", pred.name = "pred_wf1_gamma.RData")
-wf2.g=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_gamma,
+wf2.g=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.file = "GP_whitefishmodel_gamma.stan",
           model.name = "fit_wf2_gamma.rds", pred.name = "pred_wf2_gamma.RData")
   
 #Vendace
-ve1.g=model(x1,s1,y.v1,V1, save = T, model.code = GP_whitefishmodel_gamma,
+ve1.g=model(x1,s1,y.v1,V1, save = T, model.file = "GP_whitefishmodel_gamma.stan",
           model.name = "fit_ve1_gamma.rds", pred.name = "pred_ve1_gamma.RData")
-ve2.g=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_gamma,
+ve2.g=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.file = GP_whitefishmodel_gamma,
           model.name = "fit_ve2_gamma.rds", pred.name = "pred_ve2_gamma.RData")
 ```
 
 t-student prior for 1/l
 ```{r, eval=FALSE}
 #Whitefish 
-wf1.t=model(x1,s1,y1,V1,save = T,model.code = GP_whitefishmodel_stud,
+wf1.t=model(x1,s1,y1,V1,save = T,model.file = "GP_whitefishmodel_stud.stan",
           model.name = "fit_wf1_stud.rds", pred.name = "pred_wf1_stud.RData")
-wf2.t=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_stud,
+wf2.t=model(x.q1,s1,y1,V1, xpr=xpred.q, save = T, model.file = "GP_whitefishmodel_stud.stan",
           model.name = "fit_wf2_stud.rds", pred.name = "pred_wf2_stud.RData")
 
 #Vendace
-ve1.t=model(x1,s1,y.v1,V1, save = T, model.code = GP_whitefishmodel_stud,
+ve1.t=model(x1,s1,y.v1,V1, save = T, model.file = "GP_whitefishmodel_stud.stan",
           model.name = "fit_ve1_stud.rds", pred.name = "pred_ve1_stud.RData")
-ve2.t=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.code = GP_whitefishmodel_stud,
+ve2.t=model(x.q1,s1,y.v1,V1, xpr=xpred.q, save = T, model.file = "GP_whitefishmodel_stud.stan",
           model.name = "fit_ve2_stud.rds", pred.name = "pred_ve2_stud.RData")
+          
 ```
 
 ### Study results
@@ -99,13 +101,13 @@ y00=ifelse(y2==0, 0.1,y2)
 plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
 abline(0,1,col=2)
 r=residual(ptest, x2, y2,V2)
-
+respc(ptest)
 # bigraster
 p=prediction(m, expCovariance, x1,xpred,s1,spred )
-saveRDS(p,"pred_wf2_gamma.RData")
+saveRDS(p,"pred_wf1_gamma.RData")
 p$summary_beta
 par(mfrow=c(3,4))
-for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+for(i in 1:15) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
 raster.plot(p$Ef, "logdensity")
 
 ```
@@ -130,15 +132,15 @@ y00=ifelse(y2==0, 0.1,y2)
 plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
 abline(0,1,col=2)
 r=residual(ptest, x2, y2,V2)
-
+respc(ptest)
 # bigraster
 p=prediction(m, expCovariance, x1,xpred,s1,spred )
-saveRDS(p,"pred_wf2_stud.RData")
+saveRDS(p,"pred_wf1_stud.RData")
 p$summary_beta
 par(mfrow=c(3,4))
-for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+for(i in 1:15) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
 raster.plot(p$Ef, "logdensity")
-
+respc(p)
 ```
 
 Vendace, 1order , $l\sim Gamma(10,1)$
@@ -164,12 +166,12 @@ r=residual(ptest, x2, y.v2,V2)
 
 # bigraster
 p=prediction(m, expCovariance, x1,xpred,s1,spred )
-saveRDS(p, "pred_ve2_gamma.RData")
+saveRDS(p, "pred_ve1_gamma.RData")
 p$summary_beta
 par(mfrow=c(3,4))
-for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+for(i in 1:15) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
 raster.plot(p$Ef, "logdensity")
-
+respc(ptest)
 ```
 
 
@@ -196,10 +198,10 @@ r=residual(ptest, x2, y.v2,V2)
 
 # bigraster
 p=prediction(m, expCovariance, x1,xpred,s1,spred )
-saveRDS(p, "pred_ve2_stud.RData")
+saveRDS(p, "pred_ve1_stud.RData")
 p$summary_beta
 par(mfrow=c(3,4))
-for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
+for(i in 1:15) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
 raster.plot(p$Ef, "logdensity")
 
 ```
@@ -318,7 +320,7 @@ ptest=prediction(m, expCovariance, x.q1,x.q2,s1,s2 )
 raster.plot(ptest$Ef, "logdensity")
 y00=ifelse(y.v2==0, 0.1,y.v2)
 plot(log(y00/V2),ptest$Ef , xlab="obs", ylab="pred test", main="logdensity")
-abline(0,1,col=2)
+abline(0,1,col=2)w
 r=residual(ptest, x.q2, y.v2,V2)
 
 # bigraster
@@ -330,3 +332,12 @@ for(i in 1:23) hist(p$betas[i,],main=paste0(rownames(p$summary_beta)[i]))
 raster.plot(p$Ef, "logdensity")
 
 ```
+
+Estimate final models to do predictions on the whole gob
+```{r}
+wffit =model(x,s,y,V,save = T,model.file = "GP_whitefishmodel_stud.stan", it = 800,wp = 350, ch = 2,
+          model.name = "fit_wf_final_stud.rds", pred.name = "pred_wf_final_stud.RData")   
+vefit =model(x,s,y.v,V,save = T,model.file = "GP_whitefishmodel_gamma.stan", it = 800,wp = 350,ch = 2,
+          model.name = "fit_ve_final_gamma.rds", pred.name = "pred_ve_final_gamma.RData")   
+```
+

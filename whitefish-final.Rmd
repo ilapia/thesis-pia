@@ -22,6 +22,7 @@ source("functions.R")
 sourceCpp("expCovariance.cpp")
 
 load("finalTestTrainData")
+load("finalData")
 load("finalDataPred")
 ```
 
@@ -30,12 +31,12 @@ load("finalDataPred")
 Whitefish, 1order , $1/l\sim t-student_4$
 ```{r}
 wf1.t2000=readRDS("/home/piailari/Documents/thesis-pia/fits/fit_wf_final.rds")
-m=posterior.check(wf1.t2000)
+m=as.matrix(wf1.t2000) #posterior.check(wf1.t2000)
 
 # train
 ptrain=prediction(m, expCovariance, x1,x1,s1,s1 )
 
-raster.plot(ptrain$Ef, "logdensity")
+              raster.plot(ptrain$Ef, "logdensity")
 y00=ifelse(y1==0, 0.1,y1)
 plot(log(y00/V1),ptrain$Ef ,xlab="obs", ylab="pred train", main="logdensity")
 abline(0,1,col=2)
